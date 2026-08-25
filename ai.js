@@ -24,20 +24,20 @@ function initAI(modelName = null) {
   return model;
 }
 
-/**
- * Generate AI reply using Gemini with conversation history
- * UPDATED 2025: Gemini 1.5 is retired, now using 2.5 series
- */
 export async function generateReply(jid, userMessage, history = []) {
-  // NEW 2025/2026 models - Gemini 1.5 retired Sept 29 2025
+  // UPDATED AUG 2026: Google now says use 3.6/3.5 series for new users
+  // Error: "2.5-flash is no longer available to new users. Use 3.6-flash"
   const modelsToTry = [
     config.geminiModel || 'gemini-2.5-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.5-flash',
+    'gemini-3-flash',
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
-    'gemini-2.0-flash',
     'gemini-flash-latest',
-    'gemini-2.5-pro',
-    'gemini-pro-latest'
+    'gemini-pro-latest',
+    'gemini-1.5-flash-002'
   ];
   const uniqueModels = [...new Set(modelsToTry)];
 
@@ -76,22 +76,27 @@ export async function generateReply(jid, userMessage, history = []) {
 
     } catch (error) {
       lastError = error;
-      console.error(`❌ Gemini error with ${modelName}:`, error.message);
-      const fullErr = error.message || '';
-      
-      if (fullErr.includes('API_KEY') || fullErr.toLowerCase().includes('api key is invalid') || fullErr.includes('API key not valid')) {
-        console.error('🔑 Invalid API key detected!');
-        return "⚠️ My AI brain needs a valid API key — owner please check GEMINI_API_KEY on Render. I'll be back soon! 🙏";
+      const msg = error.message || '';
+      console.error(`❌ Gemini error with ${modelName}:`, msg.slice(0,400));
+
+      if (msg.includes('API_KEY') || msg.toLowerCase().includes('api key is invalid') || msg.includes('API key not valid')) {
+        return "⚠️ My AI brain needs a valid API key — owner please check GEMINI_API_KEY on Render.";
       }
 
-      // 404 model not found - try next model
-      if (fullErr.includes('404') || fullErr.toLowerCase().includes('not found') || fullErr.toLowerCase().includes('not supported')) {
-        console.warn(`⚠️ Model ${modelName} not available (404), trying next...`);
+      // Try to extract suggested model from error message
+      // e.g. "Please update your code to use models/gemini-3.6-flash"
+      const match = msg.match(/models\/([a-z0-9\-.]+)/i);
+      if (match) {
+        console.log(`💡 Google suggests: ${match[1]}`);
+      }
+
+      // 404 - try next
+      if (msg.includes('404') || msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('not available') || msg.toLowerCase().includes('no longer available')) {
+        console.warn(`⚠️ Model ${modelName} not available, trying next...`);
         continue;
       }
 
-      // Rate limit
-      if (fullErr.includes('429') || error.status === 429 || fullErr.toLowerCase().includes('quota') || fullErr.toLowerCase().includes('rate')) {
+      if (msg.includes('429') || error.status === 429 || msg.toLowerCase().includes('quota')) {
         console.warn(`⚠️ Rate limit on ${modelName}, trying next...`);
         continue;
       }
@@ -100,17 +105,8 @@ export async function generateReply(jid, userMessage, history = []) {
     }
   }
 
-  console.error('💥 All Gemini models failed. Last error:', lastError?.message);
+  console.error('💥 All Gemini models failed. Last error:', lastError?.message?.slice(0,300));
   
-  if (lastError?.message?.toLowerCase().includes('quota') || lastError?.status === 429) {
-    return "I'm getting lots of messages right now — give me a moment and I'll reply shortly! ⏳";
-  }
-  
-  // If all 404, give helpful message
-  if (lastError?.message?.includes('404')) {
-    return "⚙️ My AI models are being updated (Google retired old models). Owner: please update GEMINI_MODEL to gemini-2.5-flash in Render env and redeploy. I'll be back shortly! 🙏";
-  }
-
   return `Hmm, I'm having a little trouble thinking right now. Could you say that again? 🙏`;
 }
 
@@ -129,7 +125,6 @@ export function isHandoffRequest(text) {
 export function parseOwnerCommand(text) {
   if (!text) return null;
   const lower = text.toLowerCase().trim();
-  
   if (lower.startsWith('/pause ') || lower.startsWith('/stop ')) {
     const target = text.split(' ')[1]?.replace(/[^0-9]/g, '');
     return { action: 'pause', target };
@@ -144,30 +139,18 @@ export function parseOwnerCommand(text) {
     if (target === 'all') return { action: 'clearAll' };
     return { action: 'clear', target: target.replace(/[^0-9]/g, '') };
   }
-  if (lower === '/status' || lower === '/stats') {
-    return { action: 'status' };
-  }
-  if (lower === '/help' || lower === '/commands') {
-    return { action: 'help' };
-  }
+  if (lower === '/status' || lower === '/stats') return { action: 'status' };
+  if (lower === '/help' || lower === '/commands') return { action: 'help' };
   if (lower === '/resume all') return { action: 'resumeAll' };
-  
   return null;
 }
 
 export function getOwnerHelpText() {
   return `🤖 *Bot Owner Commands*
-Send these to yourself or in any chat (as your own message):
-
-/pause 2348012345678 - Pause bot for that contact (human takeover)
-/resume 2348012345678 - Resume bot for contact
-/resume all - Resume bot for everyone
-/clear 2348012345678 - Clear chat history for contact
-/status - Show bot status
-/help - Show this help
-
-*Auto-handoff keywords* (contacts can type):
-human, stop bot, pause bot, #human, agent, real person
-
-Bot will auto-resume after ${config.handoffMinutes} minutes.`;
+/pause 2348012345678 - Pause bot
+/resume 2348012345678 - Resume
+/resume all - Resume all
+/clear 2348012345678 - Clear history
+/status - Status
+/help - Help`;
 }

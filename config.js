@@ -2,24 +2,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const config = {
-  // Required
-  phoneNumber: (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, ''), // e.g. 2348012345678
+  phoneNumber: (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, ''),
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   upstashUrl: process.env.UPSTASH_REDIS_REST_URL || '',
   upstashToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
-
-  // Optional with defaults - UPDATED FOR 2025/2026 MODELS
-  // Gemini 1.5 is retired as of Sept 2025, use 2.5 series
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-  systemPrompt: process.env.SYSTEM_PROMPT || `You are a friendly, helpful WhatsApp assistant replying on behalf of the owner. 
-Keep replies conversational, concise (WhatsApp style), warm, and human-like. 
-- Never say you are an AI model or bot unless asked.
-- Use occasional emojis naturally, not excessively.
-- If you don't know something, be honest and helpful.
-- Remember context from earlier in the conversation.
-- If someone asks to speak to a human, acknowledge and say you'll hand over.
-- Keep replies under 3 short paragraphs max.`,
-
+  // UPDATED AUG 2026: Google says use 3.6 series for new users
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+  systemPrompt: process.env.SYSTEM_PROMPT || `You are a friendly, helpful WhatsApp assistant replying on behalf of the owner. Keep replies conversational, concise, warm, human-like. Never say you are a bot unless asked. Use emojis naturally. Remember context. If asked for human, say handing over. Keep under 3 short paragraphs.`,
   maxHistory: parseInt(process.env.MAX_HISTORY || '20', 10),
   maxPerHour: parseInt(process.env.MAX_PER_HOUR || '30', 10),
   handoffMinutes: parseInt(process.env.HANDOFF_MINUTES || '120', 10),
@@ -27,21 +16,16 @@ Keep replies conversational, concise (WhatsApp style), warm, and human-like.
   replyDelayMin: parseInt(process.env.REPLY_DELAY_MIN || '1000', 10),
   replyDelayMax: parseInt(process.env.REPLY_DELAY_MAX || '4000', 10),
   port: parseInt(process.env.PORT || '10000', 10),
-
   ownerNumber: (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '')
 };
 
 export function validateConfig() {
   const errors = [];
-  if (!config.phoneNumber) errors.push('PHONE_NUMBER is required (e.g. 2348012345678 without +)');
-  if (!config.geminiApiKey) errors.push('GEMINI_API_KEY is required');
-  if (!config.upstashUrl || !config.upstashToken) {
-    console.warn('⚠️  UPSTASH_REDIS_REST_URL / TOKEN not set - falling back to local file storage (will NOT survive Render restarts!). Set them for production.');
-  }
+  if (!config.phoneNumber) errors.push('PHONE_NUMBER required');
+  if (!config.geminiApiKey) errors.push('GEMINI_API_KEY required');
+  if (!config.upstashUrl || !config.upstashToken) console.warn('⚠️ UPSTASH not set - using local files (won\'t survive restarts)');
   if (errors.length) {
-    console.error('❌ Config errors:');
-    errors.forEach(e => console.error(' - ' + e));
-    console.error('\nCheck your Environment Variables on Render.');
+    console.error('❌ Config errors:', errors);
   }
   return errors.length === 0;
 }
