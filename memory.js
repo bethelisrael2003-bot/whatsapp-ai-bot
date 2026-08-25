@@ -2,11 +2,6 @@ import { Redis } from '@upstash/redis';
 import fs from 'fs';
 import path from 'path';
 
-/**
- * Conversation memory + rate limiting + handoff state
- * Uses Upstash Redis if available, otherwise local JSON files (for local dev)
- */
-
 class MemoryStore {
   constructor(redis) {
     this.redis = redis;
@@ -16,14 +11,18 @@ class MemoryStore {
       fs.mkdirSync(this.localDir, { recursive: true });
     }
     this.maxHistory = parseInt(process.env.MAX_HISTORY || '20', 10);
+    this.maxOwnerSamples = 50; // how many of YOUR messages to remember per contact to learn style
   }
 
   _key(jid, suffix) {
-    // Sanitize JID for filename if needed
     return `${suffix}:${jid}`;
   }
 
-  // ---------- HISTORY ----------
+  _sanitize(jid) {
+    return jid.replace(/[^a-zA-Z0-9]/g, '_');
+  }
+
+  // ---------- HISTORY (contact messages + bot replies) ----------
   async getHistory(jid) {
     const key = this._key(jid, 'chat:history');
     try {
@@ -32,7 +31,7 @@ class MemoryStore {
         if (!data) return [];
         return typeof data === 'string' ? JSON.parse(data) : data;
       } else {
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_history.json`);
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_history.json`);
         if (!fs.existsSync(file)) return [];
         return JSON.parse(fs.readFileSync(file, 'utf-8'));
       }
@@ -48,16 +47,14 @@ class MemoryStore {
     try {
       let history = await this.getHistory(jid);
       history.push({ role, content, timestamp: Date.now() });
-      // Trim to last N
       if (history.length > this.maxHistory) {
         history = history.slice(-this.maxHistory);
       }
       if (this.isRedis) {
         await this.redis.set(key, JSON.stringify(history));
-        // Optional: expire after 30 days to keep DB clean
         await this.redis.expire(key, 60 * 60 * 24 * 30);
       } else {
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_history.json`);
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_history.json`);
         fs.writeFileSync(file, JSON.stringify(history, null, 2));
       }
     } catch (e) {
@@ -68,13 +65,76 @@ class MemoryStore {
   async clearHistory(jid) {
     const key = this._key(jid, 'chat:history');
     try {
-      if (this.isRedis) {
-        await this.redis.del(key);
-      } else {
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_history.json`);
+      if (this.isRedis) await this.redis.del(key);
+      else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_history.json`);
         if (fs.existsSync(file)) fs.unlinkSync(file);
       }
     } catch {}
+  }
+
+  // ---------- OWNER STYLE LEARNING (YOUR messages per contact) ----------
+  // This is the key to seamless mimicry - learns how YOU chat with EACH person uniquely
+  async addOwnerMessage(jid, content) {
+    if (!content || content.startsWith('/')) return; // ignore commands
+    const key = this._key(jid, 'owner:style');
+    try {
+      let samples = await this.getOwnerStyle(jid);
+      // Avoid duplicates
+      if (samples.length > 0 && samples[samples.length - 1].content === content) return;
+      
+      samples.push({ content, timestamp: Date.now() });
+      if (samples.length > this.maxOwnerSamples) {
+        samples = samples.slice(-this.maxOwnerSamples);
+      }
+      if (this.isRedis) {
+        await this.redis.set(key, JSON.stringify(samples));
+        await this.redis.expire(key, 60 * 60 * 24 * 90); // keep 90 days
+      } else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_owner_style.json`);
+        fs.writeFileSync(file, JSON.stringify(samples, null, 2));
+      }
+      console.log(`📝 Learned owner style for ${jid}: "${content.slice(0,40)}..." (total ${samples.length} samples)`);
+    } catch (e) {
+      console.warn(`addOwnerMessage error:`, e.message);
+    }
+  }
+
+  async getOwnerStyle(jid) {
+    const key = this._key(jid, 'owner:style');
+    try {
+      if (this.isRedis) {
+        const data = await this.redis.get(key);
+        if (!data) return [];
+        return typeof data === 'string' ? JSON.parse(data) : data;
+      } else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_owner_style.json`);
+        if (!fs.existsSync(file)) return [];
+        return JSON.parse(fs.readFileSync(file, 'utf-8'));
+      }
+    } catch {
+      return [];
+    }
+  }
+
+  async getOwnerStylePrompt(jid) {
+    const samples = await this.getOwnerStyle(jid);
+    if (samples.length === 0) return null;
+    
+    // Take last 15 samples to build style prompt
+    const recent = samples.slice(-15).map(s => s.content);
+    return recent.join('\n');
+  }
+
+  async getAllOwnerStylesCount() {
+    // For status command
+    if (this.isRedis && typeof this.redis.keys === 'function') {
+      try {
+        const keys = await this.redis.keys('owner:style:*');
+        return keys.length;
+      } catch {}
+    }
+    return 0;
   }
 
   // ---------- RATE LIMIT ----------
@@ -84,29 +144,22 @@ class MemoryStore {
     try {
       if (this.isRedis) {
         const count = await this.redis.incr(key);
-        if (count === 1) {
-          await this.redis.expire(key, 3600); // 1 hour window
-        }
+        if (count === 1) await this.redis.expire(key, 3600);
         return count > maxPerHour;
       } else {
-        // Simple local rate limit using files with timestamps
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_ratelimit.json`);
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_ratelimit.json`);
         let data = { count: 0, resetAt: Date.now() + 3600000 };
         if (fs.existsSync(file)) {
           try {
             data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-            if (Date.now() > data.resetAt) {
-              data = { count: 0, resetAt: Date.now() + 3600000 };
-            }
+            if (Date.now() > data.resetAt) data = { count: 0, resetAt: Date.now() + 3600000 };
           } catch {}
         }
         data.count++;
         fs.writeFileSync(file, JSON.stringify(data));
         return data.count > maxPerHour;
       }
-    } catch {
-      return false; // fail open
-    }
+    } catch { return false; }
   }
 
   async getRateLimitCount(jid) {
@@ -128,43 +181,34 @@ class MemoryStore {
         const val = await this.redis.get(key);
         return !!val;
       } else {
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_handoff.json`);
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_handoff.json`);
         if (!fs.existsSync(file)) return false;
         const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-        if (Date.now() > data.expiresAt) {
-          fs.unlinkSync(file);
-          return false;
-        }
+        if (Date.now() > data.expiresAt) { fs.unlinkSync(file); return false; }
         return true;
       }
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   }
 
   async setHandoff(jid, minutes = 120) {
     const key = this._key(jid, 'handoff');
     const ttlSeconds = minutes * 60;
     try {
-      if (this.isRedis) {
-        await this.redis.set(key, '1', { ex: ttlSeconds });
-      } else {
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_handoff.json`);
+      if (this.isRedis) await this.redis.set(key, '1', { ex: ttlSeconds });
+      else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_handoff.json`);
         fs.writeFileSync(file, JSON.stringify({ expiresAt: Date.now() + ttlSeconds * 1000 }));
       }
       console.log(`⏸️ Handoff set for ${jid} for ${minutes} minutes`);
-    } catch (e) {
-      console.warn('setHandoff error:', e.message);
-    }
+    } catch (e) { console.warn('setHandoff error:', e.message); }
   }
 
   async clearHandoff(jid) {
     const key = this._key(jid, 'handoff');
     try {
-      if (this.isRedis) {
-        await this.redis.del(key);
-      } else {
-        const file = path.join(this.localDir, `${jid.replace(/[^a-zA-Z0-9]/g, '_')}_handoff.json`);
+      if (this.isRedis) await this.redis.del(key);
+      else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_handoff.json`);
         if (fs.existsSync(file)) fs.unlinkSync(file);
       }
       console.log(`▶️ Handoff cleared for ${jid}`);
@@ -181,11 +225,9 @@ class MemoryStore {
   }
 }
 
-// Singleton factory
 let memoryInstance = null;
 export async function getMemoryStore() {
   if (memoryInstance) return memoryInstance;
-
   const hasRedis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN;
   let redis = null;
   if (hasRedis) {
@@ -193,7 +235,7 @@ export async function getMemoryStore() {
       url: process.env.UPSTASH_REDIS_REST_URL,
       token: process.env.UPSTASH_REDIS_REST_TOKEN,
     });
-    console.log('🧠 Using Upstash Redis for conversation memory');
+    console.log('🧠 Using Upstash Redis for conversation memory + owner style learning');
   } else {
     console.log('🧠 Using local file memory (will NOT survive Render restarts)');
   }
