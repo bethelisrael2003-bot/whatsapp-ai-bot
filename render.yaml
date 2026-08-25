@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: whatsapp-ai-bot
+    env: node
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: PHONE_NUMBER
+        sync: false
+        # Example: 2348012345678 (no +, no spaces)
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: MAX_HISTORY
+        value: 20
+      - key: MAX_PER_HOUR
+        value: 30
+      - key: HANDOFF_MINUTES
+        value: 120
+      - key: IGNORE_GROUPS
+        value: true
+      - key: REPLY_DELAY_MIN
+        value: 1000
+      - key: REPLY_DELAY_MAX
+        value: 4000
+      - key: SYSTEM_PROMPT
+        sync: false

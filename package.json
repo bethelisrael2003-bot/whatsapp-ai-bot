@@ -1,0 +1,19 @@
+{
+  "name": "whatsapp-ai-bot-render",
+  "version": "1.0.0",
+  "description": "Always-on WhatsApp AI auto-reply bot - Render free tier + Gemini + Upstash Redis + Pairing Code",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "@google/generative-ai": "^0.21.0",
+    "@upstash/redis": "^1.34.3",
+    "qrcode-terminal": "^0.12.0",
+    "dotenv": "^16.4.5",
+    "pino": "^9.4.0"
+  }
+}
