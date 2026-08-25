@@ -19,6 +19,8 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
@@ -27,6 +29,8 @@ services:
         value: gemini-3.6-flash
       - key: GROQ_MODEL
         value: llama-3.1-8b-instant
+      - key: OPENROUTER_MODEL
+        value: google/gemini-2.0-flash-exp:free
       - key: BANK_INFO
         sync: false
       - key: MAX_HISTORY
