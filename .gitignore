@@ -4,3 +4,4 @@ memory_store/
 .env
 *.log
 .DS_Store
+.gitconfig
