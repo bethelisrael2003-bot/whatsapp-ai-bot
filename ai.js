@@ -15,65 +15,48 @@ function initAI(modelName = null, systemPrompt = null) {
     currentModelName = targetModel;
     console.log(`🤖 Gemini initializing: ${targetModel}`);
   }
-  // Always create new model instance with updated system prompt for style learning
   model = genAI.getGenerativeModel({ 
     model: targetModel,
     systemInstruction: promptToUse
   });
-  console.log(`🤖 Gemini ready: ${targetModel} with custom style`);
   return model;
 }
 
 export async function generateReply(jid, userMessage, history = [], ownerStyleSamples = null) {
-  // Build DYNAMIC system prompt that mimics owner
   let dynamicSystemPrompt = config.systemPrompt;
 
-  // If we have learned how owner chats with THIS specific person, inject it
   if (ownerStyleSamples && ownerStyleSamples.length > 0) {
     const styleExamples = ownerStyleSamples.slice(-12).join('\n- ');
     dynamicSystemPrompt = `
 You are NOT an AI. You ARE the owner of this WhatsApp account. You must chat EXACTLY like the owner.
 
 CRITICAL RULES FOR SEAMLESS MIMICRY:
-1. You ARE the owner. Never say you are AI, bot, assistant, or Gemini. You are a human.
+1. You ARE the owner. Never say you are AI, bot, assistant, or Gemini. You are human.
 2. If asked "are you AI?" or "are you bot?" -> deflect like owner would: "Lol which AI? Na me dey here" or "Come on, you know na me" - never admit AI.
-3. MIMIC OWNER'S UNIQUE STYLE with THIS person - here is how owner actually chats with them (learn these patterns):
+3. MIMIC OWNER'S UNIQUE STYLE with THIS person - here is how owner actually chats with them:
 - ${styleExamples}
 
-4. Copy their:
-   - Greeting style, slang, pidgin usage
-   - Message length (short/long)
-   - Emoji usage frequency and type
-   - Punctuation style
-   - How they say "boss", "omo", "my guy", etc.
-   - Their typical responses
-
-5. Keep replies SHORT like WhatsApp - 1-2 lines max usually, unless owner writes long.
+4. Copy their greeting style, slang, pidgin, message length, emoji usage.
+5. Keep replies SHORT like WhatsApp - 1-2 lines max usually.
 6. Be conversational, not formal. Sound exactly like owner would.
-7. Remember conversation context.
-8. If you don't know something, respond like owner would: "I no sure" or "Make I check" - not AI-like.
+7. Remember context.
+8. If you don't know something, respond like owner: "I no sure" or "Make I check"
 
 Base personality: ${config.systemPrompt}
-
-Now reply as the owner would, using the style examples above. Be seamless.
+Reply as the owner, seamless.
 `;
-    console.log(`🎭 Using learned style for ${jid}: ${ownerStyleSamples.length} samples`);
   } else {
-    // No owner samples yet - use ghost mode prompt
     dynamicSystemPrompt = `
 You are the owner of this WhatsApp account chatting with contacts. You are HUMAN, not AI.
-
 CRITICAL:
 - Never reveal you are AI, bot, assistant.
-- If asked if you're AI: "Lol, which AI? Na me" or "You dey whine me?"
+- If asked if you're AI: "Lol, which AI? Na me" 
 - Chat like a real Nigerian guy - casual, warm, short WhatsApp style.
-- Use natural slang occasionally if appropriate: "boss", "omo", "my guy", "no wahala", "how far"
-- Keep replies concise (1-2 sentences), not essay-like.
-- Use emojis sparingly and naturally, like a human would.
+- Use natural slang: "boss", "omo", "my guy", "no wahala", "how far"
+- Keep replies concise (1-2 sentences)
+- Use emojis sparingly
 - Be helpful but sound like owner.
-
 Personality: ${config.systemPrompt}
-
 Reply as human owner, seamless.
 `;
   }
@@ -93,24 +76,50 @@ Reply as human owner, seamless.
     try {
       const m = initAI(modelName, dynamicSystemPrompt);
 
-      const geminiHistory = history
+      // Build history - FIX: Ensure first message is user role (Gemini requirement)
+      let geminiHistory = history
         .slice(-config.maxHistory)
-        .filter(msg => msg.role !== 'system' && msg.content)
+        .filter(msg => msg.role !== 'system' && msg.content && msg.content.trim().length > 0)
         .map(msg => ({
           role: msg.role === 'user' ? 'user' : 'model',
           parts: [{ text: msg.content.slice(0, 1000) }]
         }));
 
+      // CRITICAL FIX: Gemini requires first message to be 'user', not 'model'
+      // Remove leading 'model' messages until we hit a 'user' message
+      while (geminiHistory.length > 0 && geminiHistory[0].role !== 'user') {
+        console.log(`⚠️ Removing leading ${geminiHistory[0].role} message to satisfy Gemini requirement`);
+        geminiHistory.shift();
+      }
+
+      // Also ensure no consecutive same roles (merge if needed)
+      const cleanedHistory = [];
+      for (let i = 0; i < geminiHistory.length; i++) {
+        const curr = geminiHistory[i];
+        if (cleanedHistory.length > 0 && cleanedHistory[cleanedHistory.length-1].role === curr.role) {
+          // Merge with previous
+          cleanedHistory[cleanedHistory.length-1].parts[0].text += '\n' + curr.parts[0].text;
+        } else {
+          cleanedHistory.push(curr);
+        }
+      }
+      geminiHistory = cleanedHistory;
+
+      // If history is empty or still invalid, start fresh (no history)
+      if (geminiHistory.length === 0) {
+        console.log(`📝 No valid history for ${jid}, starting fresh chat`);
+      }
+
       const chat = m.startChat({
         history: geminiHistory,
         generationConfig: {
           maxOutputTokens: 600,
-          temperature: 0.9, // higher for more human-like variation
+          temperature: 0.9,
           topP: 0.95,
         }
       });
 
-      console.log(`🧠 Asking ${modelName} for ${jid} (style: ${ownerStyleSamples?.length || 0} samples): "${userMessage.slice(0,50)}..."`);
+      console.log(`🧠 Asking ${modelName} for ${jid} (history: ${geminiHistory.length}, style: ${ownerStyleSamples?.length || 0}): "${userMessage.slice(0,50)}..."`);
       const result = await chat.sendMessage(userMessage);
       const text = result.response.text();
 
@@ -121,9 +130,14 @@ Reply as human owner, seamless.
     } catch (error) {
       lastError = error;
       const msg = error.message || '';
-      console.error(`❌ ${modelName} error:`, msg.slice(0,300));
+      console.error(`❌ ${modelName} error:`, msg.slice(0,400));
       if (msg.includes('API_KEY') || msg.toLowerCase().includes('api key is invalid')) {
         return "My guy, network dey do me somehow, make I get back to you 🙏";
+      }
+      if (msg.includes('First content should be with role')) {
+        console.error('🔧 History role error - will try with empty history next model');
+        // For this specific error, try next model with empty history
+        continue;
       }
       if (msg.includes('404') || msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no longer available')) continue;
       if (msg.includes('429') || error.status === 429) continue;
@@ -131,7 +145,19 @@ Reply as human owner, seamless.
     }
   }
 
-  console.error('💥 All models failed:', lastError?.message);
+  console.error('💥 All models failed:', lastError?.message?.slice(0,300));
+  // Fallback to empty history attempt with first model as last resort
+  try {
+    console.log('🔄 Last resort: trying with empty history');
+    const m = initAI(uniqueModels[0], dynamicSystemPrompt);
+    const chat = m.startChat({ history: [], generationConfig: { maxOutputTokens: 600, temperature: 0.9 } });
+    const result = await chat.sendMessage(userMessage);
+    const text = result.response.text();
+    if (text) return text.trim();
+  } catch (e) {
+    console.error('Last resort failed:', e.message);
+  }
+
   return "Network dey worry small, I go reply you now now 🙏";
 }
 
@@ -171,18 +197,13 @@ export function parseOwnerCommand(text) {
 
 export function getOwnerHelpText() {
   return `🤖 *Owner Commands*
-/pause 234... - Pause for contact
+/pause 234... - Pause
 /resume 234... - Resume
 /resume all - Resume all
 /clear 234... - Clear history
-/style 234... - Show learned style for contact
-/status - Bot status + learned contacts count
-/help - This help
+/style 234... - Show learned style
+/status - Status
+/help - Help
 
-Bot now LEARNS your style per contact automatically!
-Every message you send teaches it how you chat with that person.
-
-To teach faster: chat normally with people, bot will study you.
-
-*Handoff keywords (contacts):* human, stop bot, #human, agent`;
+Bot learns your style per contact!`;
 }
