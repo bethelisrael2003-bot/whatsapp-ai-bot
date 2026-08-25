@@ -9,9 +9,8 @@ function initAI(modelName = null) {
   if (!config.geminiApiKey) {
     throw new Error('GEMINI_API_KEY not set');
   }
-  const targetModel = modelName || config.geminiModel || 'gemini-1.5-flash';
+  const targetModel = modelName || config.geminiModel || 'gemini-2.5-flash';
   
-  // Re-init if model changed
   if (!genAI || currentModelName !== targetModel) {
     genAI = new GoogleGenerativeAI(config.geminiApiKey);
     currentModelName = targetModel;
@@ -27,19 +26,19 @@ function initAI(modelName = null) {
 
 /**
  * Generate AI reply using Gemini with conversation history
- * Tries multiple models as fallback for free tier issues
+ * UPDATED 2025: Gemini 1.5 is retired, now using 2.5 series
  */
 export async function generateReply(jid, userMessage, history = []) {
-  // Models to try in order (free tier friendly)
+  // NEW 2025/2026 models - Gemini 1.5 retired Sept 29 2025
   const modelsToTry = [
-    config.geminiModel || 'gemini-1.5-flash',
-    'gemini-1.5-flash',
-    'gemini-1.5-flash-latest',
-    'gemini-2.0-flash-exp',
-    'gemini-1.5-flash-8b',
-    'gemini-pro'
+    config.geminiModel || 'gemini-2.5-flash',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-flash-latest',
+    'gemini-2.5-pro',
+    'gemini-pro-latest'
   ];
-  // Deduplicate
   const uniqueModels = [...new Set(modelsToTry)];
 
   let lastError = null;
@@ -48,13 +47,12 @@ export async function generateReply(jid, userMessage, history = []) {
     try {
       const m = initAI(modelName);
 
-      // Build chat history for Gemini
       const geminiHistory = history
         .slice(-config.maxHistory)
         .filter(msg => msg.role !== 'system' && msg.content)
         .map(msg => ({
           role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content.slice(0, 1000) }] // trim long messages
+          parts: [{ text: msg.content.slice(0, 1000) }]
         }));
 
       const chat = m.startChat({
@@ -79,39 +77,41 @@ export async function generateReply(jid, userMessage, history = []) {
     } catch (error) {
       lastError = error;
       console.error(`❌ Gemini error with ${modelName}:`, error.message);
-      console.error(`   Status: ${error.status} | Full:`, JSON.stringify(error, Object.getOwnPropertyNames(error)).slice(0,500));
-
-      // Don't retry on API key errors - fail fast
-      if (error.message?.includes('API_KEY') || error.message?.includes('API key') || error.message?.toLowerCase().includes('api key is invalid')) {
+      const fullErr = error.message || '';
+      
+      if (fullErr.includes('API_KEY') || fullErr.toLowerCase().includes('api key is invalid') || fullErr.includes('API key not valid')) {
         console.error('🔑 Invalid API key detected!');
         return "⚠️ My AI brain needs a valid API key — owner please check GEMINI_API_KEY on Render. I'll be back soon! 🙏";
       }
 
-      // Rate limit - try next model or wait
-      if (error.message?.includes('429') || error.status === 429 || error.message?.toLowerCase().includes('quota') || error.message?.toLowerCase().includes('rate')) {
-        console.warn(`⚠️ Rate limit on ${modelName}, trying next model...`);
-        continue; // try next model
-      }
-
-      // Model not found - try next
-      if (error.message?.toLowerCase().includes('not found') || error.message?.toLowerCase().includes('not supported') || error.status === 404) {
-        console.warn(`⚠️ Model ${modelName} not found, trying next...`);
+      // 404 model not found - try next model
+      if (fullErr.includes('404') || fullErr.toLowerCase().includes('not found') || fullErr.toLowerCase().includes('not supported')) {
+        console.warn(`⚠️ Model ${modelName} not available (404), trying next...`);
         continue;
       }
 
-      // For other errors, try next model as well
+      // Rate limit
+      if (fullErr.includes('429') || error.status === 429 || fullErr.toLowerCase().includes('quota') || fullErr.toLowerCase().includes('rate')) {
+        console.warn(`⚠️ Rate limit on ${modelName}, trying next...`);
+        continue;
+      }
+
       continue;
     }
   }
 
-  // All models failed
   console.error('💥 All Gemini models failed. Last error:', lastError?.message);
   
   if (lastError?.message?.toLowerCase().includes('quota') || lastError?.status === 429) {
     return "I'm getting lots of messages right now — give me a moment and I'll reply shortly! ⏳";
   }
   
-  return `Hmm, I'm having a little trouble thinking right now (${lastError?.message?.slice(0,80) || 'unknown'}). Could you say that again? 🙏`;
+  // If all 404, give helpful message
+  if (lastError?.message?.includes('404')) {
+    return "⚙️ My AI models are being updated (Google retired old models). Owner: please update GEMINI_MODEL to gemini-2.5-flash in Render env and redeploy. I'll be back shortly! 🙏";
+  }
+
+  return `Hmm, I'm having a little trouble thinking right now. Could you say that again? 🙏`;
 }
 
 export function isHandoffRequest(text) {

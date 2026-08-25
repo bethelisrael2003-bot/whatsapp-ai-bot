@@ -8,8 +8,9 @@ export const config = {
   upstashUrl: process.env.UPSTASH_REDIS_REST_URL || '',
   upstashToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
 
-  // Optional with defaults
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+  // Optional with defaults - UPDATED FOR 2025/2026 MODELS
+  // Gemini 1.5 is retired as of Sept 2025, use 2.5 series
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
   systemPrompt: process.env.SYSTEM_PROMPT || `You are a friendly, helpful WhatsApp assistant replying on behalf of the owner. 
 Keep replies conversational, concise (WhatsApp style), warm, and human-like. 
 - Never say you are an AI model or bot unless asked.
@@ -27,8 +28,6 @@ Keep replies conversational, concise (WhatsApp style), warm, and human-like.
   replyDelayMax: parseInt(process.env.REPLY_DELAY_MAX || '4000', 10),
   port: parseInt(process.env.PORT || '10000', 10),
 
-  // Owner control: your own JID or number that can send commands via self-chat or fromMe messages
-  // If empty, any fromMe message with /command will be treated as owner command
   ownerNumber: (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '')
 };
 

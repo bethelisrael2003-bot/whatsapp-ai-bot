@@ -23,7 +23,7 @@ services:
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-1.5-flash
+        value: gemini-2.5-flash
       - key: MAX_HISTORY
         value: 20
       - key: MAX_PER_HOUR
