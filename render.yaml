@@ -15,15 +15,20 @@ services:
         value: 10000
       - key: PHONE_NUMBER
         sync: false
-        # Example: 2348012345678 (no +, no spaces)
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
         sync: false
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.6-flash
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: BANK_INFO
+        sync: false
       - key: MAX_HISTORY
         value: 20
       - key: MAX_PER_HOUR

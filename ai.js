@@ -2,10 +2,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from './config.js';
 
 let genAI = null;
-let model = null;
 let currentModelName = null;
 
-function initAI(modelName = null, systemPrompt = null) {
+function initGemini(modelName = null, systemPrompt = null) {
   if (!config.geminiApiKey) throw new Error('GEMINI_API_KEY not set');
   const targetModel = modelName || config.geminiModel || 'gemini-3.6-flash';
   const promptToUse = systemPrompt || config.systemPrompt;
@@ -13,130 +12,159 @@ function initAI(modelName = null, systemPrompt = null) {
     genAI = new GoogleGenerativeAI(config.geminiApiKey);
     currentModelName = targetModel;
   }
-  model = genAI.getGenerativeModel({ model: targetModel, systemInstruction: promptToUse });
-  return model;
+  return genAI.getGenerativeModel({ model: targetModel, systemInstruction: promptToUse });
+}
+
+// GROQ fallback - free, fast, 14k req/day
+async function generateWithGroq(userMessage, history = [], ownerStyleSamples = null, systemPrompt) {
+  if (!config.groqApiKey) throw new Error('GROQ_API_KEY not set');
+
+  let dynamicPrompt = systemPrompt;
+  if (ownerStyleSamples && ownerStyleSamples.length > 0) {
+    const styleExamples = ownerStyleSamples.slice(-12).join('\n- ');
+    dynamicPrompt = `You are the owner of this WhatsApp account. You ARE the owner, not AI. Mimic owner's style with this person:
+- ${styleExamples}
+Rules: Be owner, never say AI/bot, keep short (1-2 lines), casual Nigerian style, use slang like boss/omo. If asked for account and you have bank info: ${config.bankInfo || 'say you will send privately, never invent numbers'}. Base: ${systemPrompt}`;
+  }
+
+  const messages = [
+    { role: 'system', content: dynamicPrompt },
+    ...history.slice(-10).map(h => ({ role: h.role === 'user' ? 'user' : 'assistant', content: h.content.slice(0, 800) })),
+    { role: 'user', content: userMessage }
+  ];
+
+  console.log(`🧠 Trying Groq ${config.groqModel} as fallback...`);
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${config.groqApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.groqModel,
+      messages,
+      max_tokens: 400,
+      temperature: 0.9
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Groq ${res.status}: ${err.slice(0,200)}`);
+  }
+
+  const data = await res.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Empty Groq response');
+  console.log(`✅ Groq replied: ${text.slice(0,80)}...`);
+  return text.trim();
 }
 
 export async function generateReply(jid, userMessage, history = [], ownerStyleSamples = null) {
   const lowerMsg = userMessage.toLowerCase();
-  const isAskingAccount = lowerMsg.includes('account number') || lowerMsg.includes('acct number') || lowerMsg.includes('bank') && (lowerMsg.includes('send') || lowerMsg.includes('opay') || lowerMsg.includes('a/c')) || lowerMsg.includes('send me money') && lowerMsg.includes('account');
-
-  // More precise detection for payment requests
   const paymentKeywords = ['account number', 'acct number', 'a/c number', 'opay', 'bank name', 'send me your account', 'your account', 'account details'];
   const isPaymentRequest = paymentKeywords.some(k => lowerMsg.includes(k));
 
   let dynamicSystemPrompt = config.systemPrompt;
-
   if (ownerStyleSamples && ownerStyleSamples.length > 0) {
     const styleExamples = ownerStyleSamples.slice(-12).join('\n- ');
     dynamicSystemPrompt = `
-You are NOT an AI. You ARE the owner of this WhatsApp account. Chat EXACTLY like owner.
-
-CRITICAL RULES:
-1. You ARE owner. Never say AI/bot/assistant.
-2. If asked "are you AI?" -> "Lol which AI? Na me dey here"
-3. MIMIC OWNER'S STYLE with THIS person:
+You are NOT AI. You ARE owner of this WhatsApp. Chat EXACTLY like owner.
+MIMIC OWNER'S STYLE with THIS person:
 - ${styleExamples}
-4. Copy greeting, slang, length, emoji, punctuation.
-5. Keep replies SHORT (1-2 lines).
-6. Be conversational, human-like.
-7. Remember context.
-
-SAFETY - PAYMENT INFO:
-${config.bankInfo ? `- When asked for account/bank: Share EXACTLY this: ${config.bankInfo} - DO NOT invent numbers. Share as owner would.` : `- When asked for account/bank/money: NEVER invent account numbers. Say: "Omo make I double-check, I go send am for private now" and DO NOT share any numbers. Never hallucinate bank details.`}
-- Never share PIN, password, OTP.
-- Never invent financial info.
-
+Rules: Be owner, never AI/bot, short (1-2 lines), conversational, human-like.
+SAFETY: ${config.bankInfo ? `When asked for account/bank: Share EXACTLY: ${config.bankInfo}. Do NOT invent.` : `When asked for account/bank: NEVER invent numbers. Say: "Omo make I double-check, I go send am for private now"`}
 Base: ${config.systemPrompt}
 Reply as owner, seamless.
 `;
   } else {
     dynamicSystemPrompt = `
-You are owner of this WhatsApp account. You are HUMAN, not AI.
-CRITICAL:
-- Never reveal AI/bot.
-- If asked if AI: "Lol, which AI? Na me"
-- Chat like real Nigerian guy - casual, warm, short.
-- Use slang: "boss", "omo", "my guy", "no wahala"
-- Keep concise (1-2 sentences)
-
-SAFETY - PAYMENT:
-${config.bankInfo ? `When asked for account/bank: Share EXACTLY: ${config.bankInfo}. Do not invent.` : `When asked for account/bank: NEVER invent numbers. Say you will send privately. Example: "Make I confirm, I go send am now". Never share fake account.`}
-
+You are owner of WhatsApp account. HUMAN, not AI. Never reveal AI/bot. If asked if AI: "Lol, which AI? Na me"
+Chat like real Nigerian guy - casual, warm, short. Use slang: boss, omo, my guy, no wahala. Concise.
+SAFETY: ${config.bankInfo ? `Account: ${config.bankInfo}. Share exactly when asked.` : `When asked account: NEVER invent numbers. Say you will send privately.`}
 Personality: ${config.systemPrompt}
 Reply as human owner.
 `;
-  }
-
-  // If payment request and we have no bank info, force handoff-style reply without calling AI to avoid hallucination
-  if (isPaymentRequest && !config.bankInfo) {
-    console.log(`💳 Payment request detected from ${jid}, no BANK_INFO set - using safe fallback`);
-    // Still call AI but with strong instruction not to hallucinate, or return safe message
-    // We'll let AI handle but with safety prompt above
   }
 
   const modelsToTry = [config.geminiModel || 'gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-flash-latest'];
   const uniqueModels = [...new Set(modelsToTry)];
   let lastError = null;
 
+  // Try Gemini first
   for (const modelName of uniqueModels) {
     try {
-      const m = initAI(modelName, dynamicSystemPrompt);
+      const m = initGemini(modelName, dynamicSystemPrompt);
       let geminiHistory = history
         .slice(-config.maxHistory)
         .filter(msg => msg.role !== 'system' && msg.content && msg.content.trim().length > 0)
         .map(msg => ({ role: msg.role === 'user' ? 'user' : 'model', parts: [{ text: msg.content.slice(0, 1000) }] }));
-
       while (geminiHistory.length > 0 && geminiHistory[0].role !== 'user') geminiHistory.shift();
-      
-      const cleanedHistory = [];
+      const cleaned = [];
       for (let i = 0; i < geminiHistory.length; i++) {
         const curr = geminiHistory[i];
-        if (cleanedHistory.length > 0 && cleanedHistory[cleanedHistory.length-1].role === curr.role) {
-          cleanedHistory[cleanedHistory.length-1].parts[0].text += '\n' + curr.parts[0].text;
-        } else cleanedHistory.push(curr);
+        if (cleaned.length > 0 && cleaned[cleaned.length-1].role === curr.role) cleaned[cleaned.length-1].parts[0].text += '\n' + curr.parts[0].text;
+        else cleaned.push(curr);
       }
-      geminiHistory = cleanedHistory;
+      geminiHistory = cleaned;
 
       const chat = m.startChat({ history: geminiHistory, generationConfig: { maxOutputTokens: 600, temperature: 0.9, topP: 0.95 } });
-      console.log(`🧠 Asking ${modelName} for ${jid} (history: ${geminiHistory.length}, style: ${ownerStyleSamples?.length || 0}): "${userMessage.slice(0,50)}..."`);
+      console.log(`🧠 Asking ${modelName} for ${jid} (history: ${geminiHistory.length}, style: ${ownerStyleSamples?.length || 0})`);
       const result = await chat.sendMessage(userMessage);
       const text = result.response.text();
       if (!text) throw new Error('Empty response');
-      console.log(`✅ Reply: ${text.slice(0,80)}...`);
+      console.log(`✅ Gemini ${modelName} replied`);
       
-      // Post-check: If bot hallucinated account number and we have no BANK_INFO, block it
       if (!config.bankInfo && /\b\d{10}\b/.test(text) && isPaymentRequest) {
-        console.warn('⚠️ Blocked hallucinated account number in reply');
+        console.warn('⚠️ Blocked hallucinated account');
         return "Omo make I double-check my Opay, I go send am for private now now 🙏";
       }
-      
       return text.trim();
     } catch (error) {
       lastError = error;
       const msg = error.message || '';
-      console.error(`❌ ${modelName} error:`, msg.slice(0,400));
-      if (msg.includes('API_KEY') || msg.toLowerCase().includes('api key is invalid')) return "My guy, network dey do me somehow, make I get back to you 🙏";
+      console.error(`❌ ${modelName} error:`, msg.slice(0,300));
+      if (msg.includes('API_KEY') || msg.toLowerCase().includes('api key is invalid')) {
+        // Don't return yet, try Groq fallback
+        console.log('🔄 Gemini key issue, trying Groq fallback...');
+        break;
+      }
       if (msg.includes('First content should be with role')) continue;
       if (msg.includes('404') || msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no longer available')) continue;
-      if (msg.includes('429') || error.status === 429) continue;
+      if (msg.includes('429') || msg.includes('503') || error.status === 429 || error.status === 503 || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('quota')) {
+        console.log('⚠️ Gemini overloaded/quota, trying next model or Groq...');
+        continue;
+      }
       continue;
     }
   }
 
-  console.error('💥 All models failed:', lastError?.message?.slice(0,300));
+  // Fallback to Groq if Gemini failed and Groq key exists
+  if (config.groqApiKey) {
+    try {
+      console.log('🔄 All Gemini models failed, trying Groq fallback...');
+      const groqReply = await generateWithGroq(userMessage, history, ownerStyleSamples, dynamicSystemPrompt);
+      if (!config.bankInfo && /\b\d{10}\b/.test(groqReply) && isPaymentRequest) {
+        return "Omo make I double-check, I go send am for private 🙏";
+      }
+      return groqReply;
+    } catch (groqError) {
+      console.error('❌ Groq also failed:', groqError.message.slice(0,300));
+      lastError = groqError;
+    }
+  } else {
+    console.log('💡 Tip: Add GROQ_API_KEY for free fallback when Gemini is overloaded');
+  }
+
+  console.error('💥 All AI failed:', lastError?.message?.slice(0,300));
   try {
-    const m = initAI(uniqueModels[0], dynamicSystemPrompt);
+    const m = initGemini(uniqueModels[0], dynamicSystemPrompt);
     const chat = m.startChat({ history: [], generationConfig: { maxOutputTokens: 600, temperature: 0.9 } });
     const result = await chat.sendMessage(userMessage);
     const text = result.response.text();
-    if (text) {
-      if (!config.bankInfo && /\b\d{10}\b/.test(text) && isPaymentRequest) {
-        return "Omo make I double-check, I go send am for private 🙏";
-      }
-      return text.trim();
-    }
+    if (text) return text.trim();
   } catch {}
+
   return "Network dey worry small, I go reply you now now 🙏";
 }
 
@@ -179,11 +207,12 @@ export function getOwnerHelpText() {
 /pause 234... - Pause
 /resume 234... - Resume
 /resume all - Resume all
-/clear 234... - Clear history
-/style 234... - Show learned style
-/status - Status
+/clear 234... - Clear
+/style 234... - Show style
+/status - Status + AI keys
 /help - Help
 
 Bot learns your style per contact!
-Set BANK_INFO env var to share real account safely.`;
+Set BANK_INFO for real account.
+Add GROQ_API_KEY for free backup when Gemini busy.`;
 }
