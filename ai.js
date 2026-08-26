@@ -354,7 +354,11 @@ export function parseOwnerCommand(text) {
   if (lower.startsWith('/clear ')) {
     const target = lower.split(' ')[1];
     if (target === 'all') return { action: 'clearAll' };
+    if (target === 'sessions' || target === 'session') return { action: 'clearSessions' };
     return { action: 'clear', target: target.replace(/[^0-9]/g, '') };
+  }
+  if (lower === '/clear-sessions' || lower === '/clearsessions' || lower === '/fix-bad-mac') {
+    return { action: 'clearSessions' };
   }
   if (lower.startsWith('/style ')) {
     const target = text.split(' ')[1]?.replace(/[^0-9]/g, '');
@@ -419,6 +423,7 @@ export function getOwnerHelpText() {
 /resume 234... - Resume
 /resume all - Resume all
 /clear 234... - Clear history
+/clear sessions - Fix Bad MAC errors (Failed to decrypt)
 /style 234... - Show learned style
 /status - Status + recent contacts
 /help - This help
@@ -429,7 +434,13 @@ export function getOwnerHelpText() {
 • "them", "all", "same thing" = uses recent shared contacts
 • Detects gender from YOUR history (how you called them ma/Sir)
 • Auto-detects intent - no need to say /agent
+• Voice notes + Videos transcribed via Groq Whisper
+• Nigerian time aware (no Good evening at 3am)
+• Keep-alive 24/7 (no sleep)
 
 AI Chain: Gemini → Groq → Cerebras → GitHub → OpenRouter → Together → Mistral → HF
-Media: Images, Stickers, Voice, Video, Contacts, Emoji ✅`;
+Media: Images, Stickers, Voice, Video, Contacts, Emoji ✅
+
+🛠️ Fix Bad MAC: /clear sessions or visit /clear-sessions`;
+}
 }

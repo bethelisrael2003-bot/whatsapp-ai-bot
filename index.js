@@ -12,7 +12,24 @@ import { getAgentManager, parseAgentCommand, parseNaturalAgentIntent, extractNum
 const server = http.createServer(async (req, res) => {
   if (req.url === '/health' || req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), bot: global.botStatus || 'starting', timestamp: new Date().toISOString() }));
+    res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), bot: global.botStatus || 'starting', timestamp: new Date().toISOString(), instanceId: global.instanceId || 'unknown' }));
+  } else if (req.url === '/clear-sessions' && (req.method === 'GET' || req.method === 'POST')) {
+    // Clear Bad MAC sessions - fixes decryption errors
+    try {
+      const mem = await getMemoryStore();
+      // Need auth redis - create temp auth to get clearSessions
+      const { createAuthState } = await import('./auth.js');
+      const authState = await createAuthState();
+      let cleared = 0;
+      if (authState.clearSessions) {
+        cleared = await authState.clearSessions();
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: `Cleared ${cleared} session keys to fix Bad MAC. Bot will re-establish sessions on next messages.`, cleared }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: e.message }));
+    }
   } else if (req.url === '/import' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Import Old Chats + Agent Control</title><style>body{font-family:system-ui;padding:20px;max-width:700px;margin:auto;background:#f5f5f5} .card{background:white;padding:20px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1);margin-bottom:20px} textarea{width:100%;height:200px;padding:12px;border:1px solid #ddd;border-radius:8px;font-family:monospace;font-size:13px} input,button{padding:12px;border-radius:8px;border:1px solid #ddd;margin:5px 0;width:100%} button{background:#25D366;color:white;border:none;font-weight:bold;cursor:pointer} button:hover{background:#128C7E} .info{background:#e8f5e9;padding:12px;border-radius:8px;margin:10px 0;font-size:14px} .agent{background:#fff3e0;padding:12px;border-radius:8px;margin:10px 0}</style></head><body>
@@ -135,6 +152,7 @@ let agentManager = null;
 let isStarting = false;
 let reconnectTimeout = null;
 let instanceId = Math.random().toString(36).slice(2, 8);
+global.instanceId = instanceId;
 
 async function startBot() {
   if (isStarting) {
@@ -791,10 +809,28 @@ async function handleOwnerCommand(cmd, currentJid) {
       break;
     }
     case 'clear': {
-      if (!cmd.target) { await sock.sendMessage(sendTo, { text: 'Usage: /clear 2348012345678' }); return; }
+      if (!cmd.target) { await sock.sendMessage(sendTo, { text: 'Usage: /clear 2348012345678 or /clear sessions to fix Bad MAC' }); return; }
       const targetJid = `${cmd.target}@s.whatsapp.net`;
       await memory.clearHistory(targetJid);
       await sock.sendMessage(sendTo, { text: `🗑️ History cleared for ${cmd.target}` });
+      break;
+    }
+    case 'clearSessions': {
+      try {
+        await sock.sendMessage(sendTo, { text: `🧹 Clearing Bad MAC sessions... This fixes "Failed to decrypt" errors. Bot will re-establish sessions on next messages.` });
+        let cleared = 0;
+        if (auth && auth.clearSessions) {
+          cleared = await auth.clearSessions();
+        } else {
+          // Fallback: create temp auth
+          const { createAuthState } = await import('./auth.js');
+          const tempAuth = await createAuthState();
+          if (tempAuth.clearSessions) cleared = await tempAuth.clearSessions();
+        }
+        await sock.sendMessage(sendTo, { text: `✅ Cleared ${cleared} session keys!\n\nBad MAC should be fixed now. Future messages will decrypt correctly. Old queued messages that failed to decrypt are lost, but new messages will work.\n\nIf still seeing Bad MAC, you may need to re-pair once.` });
+      } catch (e) {
+        await sock.sendMessage(sendTo, { text: `❌ Failed to clear sessions: ${e.message}\n\nTry via web: https://whatsapp-ai-bot-xvp1.onrender.com/clear-sessions` });
+      }
       break;
     }
     case 'send': {

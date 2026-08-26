@@ -98,6 +98,33 @@ export async function useRedisAuthState(redis) {
       } catch (e) {
         console.warn('clearState error:', e.message);
       }
+    },
+    clearSessions: async () => {
+      // Clear only session keys that cause Bad MAC, keep creds
+      try {
+        console.log('🧹 Clearing Baileys session keys to fix Bad MAC...');
+        if (typeof redis.keys === 'function') {
+          const sessionKeys = await redis.keys(`${KEYS_PREFIX}:session:*`);
+          const senderKeys = await redis.keys(`${KEYS_PREFIX}:sender-key:*`);
+          const allBadKeys = [...(sessionKeys || []), ...(senderKeys || [])];
+          console.log(`🧹 Found ${allBadKeys.length} session/sender keys to clear`);
+          if (allBadKeys.length > 0) {
+            const chunkSize = 50;
+            let cleared = 0;
+            for (let i = 0; i < allBadKeys.length; i += chunkSize) {
+              const chunk = allBadKeys.slice(i, i + chunkSize);
+              await Promise.all(chunk.map(k => redis.del(k)));
+              cleared += chunk.length;
+            }
+            console.log(`✅ Cleared ${cleared} session keys - Bad MAC should be fixed, sessions will re-establish`);
+            return cleared;
+          }
+        }
+        return 0;
+      } catch (e) {
+        console.warn('clearSessions error:', e.message);
+        return 0;
+      }
     }
   };
 }
