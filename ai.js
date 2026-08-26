@@ -443,4 +443,3 @@ Media: Images, Stickers, Voice, Video, Contacts, Emoji ✅
 
 🛠️ Fix Bad MAC: /clear sessions or visit /clear-sessions`;
 }
-}
