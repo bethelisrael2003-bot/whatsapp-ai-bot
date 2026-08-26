@@ -21,6 +21,14 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: TOGETHER_API_KEY
+        sync: false
+      - key: HF_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: COHERE_API_KEY
+        sync: false
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
@@ -41,9 +49,3 @@ services:
         value: 120
       - key: IGNORE_GROUPS
         value: true
-      - key: REPLY_DELAY_MIN
-        value: 1000
-      - key: REPLY_DELAY_MAX
-        value: 4000
-      - key: SYSTEM_PROMPT
-        sync: false
