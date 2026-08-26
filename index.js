@@ -337,7 +337,7 @@ async function handleMessage(msg) {
   const isFromMe = msg.key.fromMe;
   const contactName = msg.pushName || jid.split('@')[0];
   const m = msg.message;
-  const { text: messageContent, mediaInfo } = await extractContent(msg);
+  let { text: messageContent, mediaInfo } = await extractContent(msg);
   const ownerJid = `${config.phoneNumber}@s.whatsapp.net`;
   const isSelfChat = jid === ownerJid || jid === `${config.phoneNumber}@s.whatsapp.net`;
 
