@@ -263,8 +263,3 @@ Features: Text, Images, Stickers, Voice, Video, Emoji ✅
 Learns your unique style per person!
 BANK_INFO for real account`;
 }
-
-async function generateWithGitHubModels(userMessage, history, style, systemPrompt) {
-  if (!config.githubToken) throw new Error('No GitHub token');
-  return callOpenAICompatible({ apiKey: config.githubToken, baseUrl: 'https://models.github.ai/inference', model: config.githubModel, messages: buildMessages(userMessage, history, style, systemPrompt), providerName: 'GitHub-Models' });
-}
