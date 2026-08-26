@@ -524,6 +524,24 @@ async function handleOwnerCommand(cmd, currentJid) {
       await sock.sendMessage(sendTo, { text: `🗑️ History cleared for ${cmd.target}` });
       break;
     }
+    case 'send': {
+      if (!cmd.target || !cmd.message) { await sock.sendMessage(sendTo, { text: 'Usage: /send 2348012345678 Your message here\n\nExample: /send 08051934689 Hello boss how far?' }); return; }
+      const { normalizeNumber } = await import('./agent.js');
+      const normalized = normalizeNumber(cmd.target);
+      if (!normalized) { await sock.sendMessage(sendTo, { text: `❌ Invalid number: ${cmd.target}` }); return; }
+      const targetJid = `${normalized}@s.whatsapp.net`;
+      try {
+        console.log(`📤 Owner /send to ${targetJid}: ${cmd.message.slice(0,80)}...`);
+        await sock.sendMessage(targetJid, { text: cmd.message });
+        await memory.addMessage(targetJid, 'assistant', cmd.message);
+        await memory.addOwnerMessage(targetJid, cmd.message);
+        await sock.sendMessage(sendTo, { text: `✅ Sent to ${normalized}:\n\n${cmd.message}` });
+      } catch (e) {
+        console.error(`❌ /send failed for ${targetJid}:`, e.message);
+        await sock.sendMessage(sendTo, { text: `❌ Failed to send to ${normalized}: ${e.message}\n\nTry again or check if number is on WhatsApp` });
+      }
+      break;
+    }
     case 'style': {
       if (!cmd.target) { await sock.sendMessage(sendTo, { text: 'Usage: /style 2348012345678' }); return; }
       const targetJid = `${cmd.target}@s.whatsapp.net`;

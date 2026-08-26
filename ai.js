@@ -275,6 +275,14 @@ export function parseOwnerCommand(text) {
     const target = text.split(' ')[1]?.replace(/[^0-9]/g, '');
     return { action: 'style', target };
   }
+  if (lower.startsWith('/send ')) {
+    // /send 2348012345678 Hello boss how far
+    const parts = text.trim().split(/\s+/);
+    if (parts.length < 3) return { action: 'send', target: '', message: '' };
+    const target = parts[1].replace(/[^0-9]/g, '');
+    const message = parts.slice(2).join(' ');
+    return { action: 'send', target, message };
+  }
   if (lower === '/status' || lower === '/stats') return { action: 'status' };
   if (lower === '/help') return { action: 'help' };
   if (lower === '/resume all') return { action: 'resumeAll' };
@@ -283,17 +291,25 @@ export function parseOwnerCommand(text) {
 
 export function getOwnerHelpText() {
   return `🤖 *Owner Commands*
-/pause 234... - Pause
+
+💬 Messaging:
+/send 234... message - Send message directly (any number format, 0805... ok)
+/agent 0805... | Goal: ... - Start autonomous agent to chat for you
+/agents - List active agents
+/stopagent 234... - Stop agent
+
+🔧 Controls:
+/pause 234... - Pause bot for contact
 /resume 234... - Resume
 /resume all - Resume all
-/clear 234... - Clear
-/style 234... - Show style
+/clear 234... - Clear history
+/style 234... - Show learned style
 /status - Status + AI chain
-/help - Help
+/help - This help
 
 How it handles people:
-• KNOWN contacts (you've chatted before): Mimics YOUR unique style with THEM exactly
-• NEW numbers: Professional, neutral, warm until you return to give perspective
+• KNOWN contacts: Mimics YOUR unique style with THEM
+• NEW numbers: Professional, neutral, warm
 
 AI Chain: Gemini → Groq → Cerebras → GitHub → OpenRouter → Together → Mistral → HF
 Media: Images, Stickers, Voice, Video, Emoji ✅`;
