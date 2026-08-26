@@ -13,6 +13,8 @@ services:
         value: production
       - key: PORT
         value: 10000
+      - key: RENDER_EXTERNAL_URL
+        value: https://whatsapp-ai-bot-xvp1.onrender.com
       - key: PHONE_NUMBER
         sync: false
       - key: GEMINI_API_KEY
@@ -28,6 +30,10 @@ services:
       - key: MISTRAL_API_KEY
         sync: false
       - key: COHERE_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
         sync: false
       - key: UPSTASH_REDIS_REST_URL
         sync: false
@@ -49,3 +55,13 @@ services:
         value: 120
       - key: IGNORE_GROUPS
         value: true
+
+  # Keep-alive cron job - pings web service every 5 minutes to prevent sleep (free tier sleeps after 15 min idle)
+  - type: cron
+    name: keep-alive-ping
+    env: node
+    plan: free
+    branch: main
+    schedule: "*/5 * * * *"
+    buildCommand: ""
+    startCommand: "curl -s https://whatsapp-ai-bot-xvp1.onrender.com/health && echo \"Pinged at $(date)\" || wget -qO- https://whatsapp-ai-bot-xvp1.onrender.com/health"

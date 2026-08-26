@@ -97,6 +97,30 @@ async function loadStats(){document.getElementById('stats').innerHTML='⏳...';t
 
 server.listen(config.port, '0.0.0.0', () => {
   console.log(`🌐 Server on 0.0.0.0:${config.port} - /import and /agent available`);
+  
+  // Keep-alive: self-ping every 4 minutes to prevent Render free tier sleep (15 min idle)
+  // This creates inbound HTTP request to self, which counts as activity for Render
+  const KEEP_ALIVE_INTERVAL = 4 * 60 * 1000; // 4 minutes
+  setInterval(async () => {
+    try {
+      const url = `http://127.0.0.1:${config.port}/health`;
+      const res = await fetch(url);
+      const data = await res.json().catch(() => ({}));
+      console.log(`💓 Keep-alive ping: ${data.status || res.status} - uptime ${Math.floor(process.uptime())}s - ${new Date().toLocaleString('en-NG', { timeZone: 'Africa/Lagos' })} WAT`);
+    } catch (e) {
+      console.error(`💓 Keep-alive failed: ${e.message}`);
+    }
+  }, KEEP_ALIVE_INTERVAL);
+  console.log(`💓 Keep-alive enabled: pinging /health every 4 minutes to prevent Render sleep`);
+  
+  // External ping every 5 minutes to public URL (if available) - backup
+  const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || 'https://whatsapp-ai-bot-xvp1.onrender.com';
+  setInterval(async () => {
+    try {
+      const res = await fetch(`${PUBLIC_URL}/health`);
+      console.log(`🌐 External keep-alive: ${PUBLIC_URL}/health -> ${res.status}`);
+    } catch {}
+  }, 5 * 60 * 1000);
 });
 
 global.botStatus = 'starting';
