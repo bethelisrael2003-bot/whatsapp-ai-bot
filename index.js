@@ -321,44 +321,85 @@ async function handleAgentCommand(agentCmd, ownerJid) {
   let started = 0;
   let failed = 0;
   
-  await sock.sendMessage(ownerJid, { text: `🤖 *Starting Agent*\n\nTargets: ${numbers.length} numbers\nGoal: ${goal}\n\nI will message them one by one and bring discussion to end. Reporting progress here...` });
+  try {
+    await sock.sendMessage(ownerJid, { text: `🤖 *Starting Agent*\n\nTargets: ${numbers.length} numbers\nGoal: ${goal}\n\nI will message them one by one and bring discussion to end. Reporting progress here...` });
+  } catch (e) { console.error('Failed to send starting msg to owner:', e.message); }
 
   for (const num of numbers) {
     try {
       const targetJid = `${num}@s.whatsapp.net`;
+      console.log(`🤖 Creating agent task for ${targetJid} with goal: ${goal}`);
       await agentManager.createTask(targetJid, goal, ownerJid);
       
       const ownerStyle = await memory.getOwnerStyle(targetJid);
       const styleTexts = ownerStyle.map(s => s.content);
       const history = await memory.getHistory(targetJid);
       
-      // Generate initial message with goal
-      const initialPrompt = `You need to start a conversation with this contact to achieve this goal: ${goal}. Write the first message as owner would, in their unique style with this person. Be natural, not robotic. Start conversation.`;
-      const initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null);
+      // Generate initial message with goal - with fallback
+      let initialMsg = '';
+      try {
+        const initialPrompt = `You need to start a conversation with this contact to achieve this goal: ${goal}. Write ONLY the first message as owner would, in their unique style with this person. Be natural, not robotic. Keep short. Start conversation now. No explanation, just the message.`;
+        initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null);
+        console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,100)}...`);
+      } catch (e) {
+        console.error(`❌ Failed to generate initial msg for ${targetJid}:`, e.message);
+        // Fallback message based on goal
+        if (goal.toLowerCase().includes('project')) {
+          initialMsg = `Boss, how far? How the project dey go? Any update? 🙏`;
+        } else if (goal.toLowerCase().includes('money') || goal.toLowerCase().includes('payment')) {
+          initialMsg = `My guy, how far? About that money matter, any update?`;
+        } else {
+          initialMsg = `Boss, how you dey? Quick one - ${goal.slice(0,100)}`;
+        }
+        console.log(`🤖 Using fallback initial msg: ${initialMsg}`);
+      }
+
+      // Ensure message not empty and not network worry
+      if (!initialMsg || initialMsg.includes('Network dey worry') || initialMsg.length < 3) {
+        initialMsg = `Boss, how far? ${goal.slice(0,80)} 🙏`;
+      }
       
       await delayRandom();
-      await sock.sendMessage(targetJid, { text: initialMsg });
-      await memory.addMessage(targetJid, 'assistant', initialMsg);
+      console.log(`📤 Sending agent message to ${targetJid}: ${initialMsg.slice(0,80)}...`);
+      try {
+        await sock.sendMessage(targetJid, { text: initialMsg });
+        console.log(`✅ Agent message SENT to ${targetJid}`);
+        await memory.addMessage(targetJid, 'assistant', initialMsg);
+        await agentManager.updateTask(targetJid, { 
+          history: [{ role: 'assistant', content: initialMsg }],
+          steps: 1
+        });
+        started++;
+      } catch (sendErr) {
+        console.error(`❌ Failed to SEND message to ${targetJid}:`, sendErr.message);
+        // Try alternative JID format (LID vs s.whatsapp.net) - try without retry
+        try {
+          console.log(`🔄 Retrying send to ${targetJid} after 2s...`);
+          await delay(2000);
+          await sock.sendMessage(targetJid, { text: initialMsg });
+          console.log(`✅ Retry succeeded for ${targetJid}`);
+          await memory.addMessage(targetJid, 'assistant', initialMsg);
+          await agentManager.updateTask(targetJid, { history: [{ role: 'assistant', content: initialMsg }], steps: 1 });
+          started++;
+        } catch (retryErr) {
+          console.error(`❌ Retry also failed for ${targetJid}:`, retryErr.message);
+          await agentManager.failTask(targetJid, `Failed to send: ${retryErr.message}`);
+          failed++;
+        }
+      }
       
-      // Update task history
-      await agentManager.updateTask(targetJid, { 
-        history: [{ role: 'assistant', content: initialMsg }],
-        steps: 1
-      });
-      
-      console.log(`🤖 Agent started for ${targetJid}: ${initialMsg.slice(0,80)}...`);
-      started++;
-      
-      // Delay between multiple numbers to avoid ban (5-10 sec)
       if (numbers.length > 1) await delay(5000 + Math.random() * 5000);
       
     } catch (e) {
-      console.error(`Agent failed for ${num}:`, e.message);
+      console.error(`Agent failed for ${num}:`, e.message, e.stack?.slice(0,300));
       failed++;
+      try { await agentManager.failTask(`${num}@s.whatsapp.net`, e.message); } catch {}
     }
   }
   
-  await sock.sendMessage(ownerJid, { text: `🚀 *Agent Launched*\n\n✅ Started: ${started}\n❌ Failed: ${failed}\n\nI will chat with them and report back when goal is achieved. You can check active tasks with /status` });
+  try {
+    await sock.sendMessage(ownerJid, { text: `🚀 *Agent Launched*\n\n✅ Started: ${started}\n❌ Failed: ${failed}\n\nI will chat with them and report back when goal is achieved. You can check active tasks with /status\n\nIf message didn't drop, check:\n1. Number is on WhatsApp\n2. You have chatted with them before\n3. Try /send command instead: /send ${numbers[0]} your message` });
+  } catch {}
 }
 
 async function handleAgentReply(jid, messageContent, mediaInfo, task) {
