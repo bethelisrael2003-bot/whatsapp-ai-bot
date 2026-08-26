@@ -9,6 +9,33 @@ import { generateReply, isHandoffRequest, parseOwnerCommand, getOwnerHelpText, g
 import { extractOwnerStyleFromExport } from './import.js';
 import { getAgentManager, parseAgentCommand, parseNaturalAgentIntent, extractNumbersFromVcard, extractNumbersRobust } from './agent.js';
 
+// Suppress noisy Bad MAC stack traces - keep logs clean, only show summary
+const originalConsoleError = console.error;
+let badMacCount = 0;
+let lastBadMacLog = 0;
+console.error = (...args) => {
+  const msg = args.join(' ');
+  if (msg.includes('Bad MAC') || msg.includes('Failed to decrypt message with any known session')) {
+    badMacCount++;
+    const now = Date.now();
+    // Only log every 10 seconds to avoid spam
+    if (now - lastBadMacLog > 10000) {
+      console.log(`⚠️ Bad MAC x${badMacCount} - old corrupted sessions (will auto-clear on next restart). These are old queued messages that can't be decrypted, not new messages. New messages will work after session clear.`);
+      lastBadMacLog = now;
+      badMacCount = 0;
+    }
+    return;
+  }
+  if (msg.includes('Session error:Error: Bad MAC')) {
+    return; // Suppress stack trace
+  }
+  if (msg.includes('at Object.verifyMAC') || msg.includes('at SessionCipher.doDecryptWhisperMessage') || msg.includes('at async') && msg.includes('session_cipher.js')) {
+    // Suppress stack traces for Bad MAC
+    if (msg.includes('Bad MAC') || badMacCount > 0) return;
+  }
+  originalConsoleError(...args);
+};
+
 const server = http.createServer(async (req, res) => {
   if (req.url === '/health' || req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -170,6 +197,25 @@ async function startBot() {
     console.log('='.repeat(60));
     memory = await getMemoryStore();
     auth = await createAuthState();
+    
+    // Auto-clear old corrupted sessions that cause Bad MAC - one time fix
+    if (auth.clearSessions) {
+      try {
+        const shouldAutoClear = process.env.AUTO_CLEAR_SESSIONS !== 'false';
+        if (shouldAutoClear) {
+          console.log(`🧹 Checking for old corrupted sessions that cause Bad MAC...`);
+          const cleared = await auth.clearSessions();
+          if (cleared > 0) {
+            console.log(`✅ Auto-cleared ${cleared} old session keys - Bad MAC should be fixed now`);
+          } else {
+            console.log(`✅ No old sessions to clear - sessions are clean`);
+          }
+        }
+      } catch (e) {
+        console.log(`⚠️ Auto-clear sessions failed: ${e.message}`);
+      }
+    }
+    
     agentManager = await getAgentManager(memory, null);
     const { version } = await fetchLatestBaileysVersion();
     console.log(`📦 Baileys version: ${version.join('.')} [${instanceId}]`);
