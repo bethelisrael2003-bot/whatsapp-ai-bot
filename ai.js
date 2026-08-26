@@ -81,6 +81,64 @@ async function generateWithHuggingFace(userMessage, history, style, systemPrompt
   return text.trim();
 }
 
+export function getNigerianTimeContext() {
+  try {
+    const now = new Date();
+    // Get Nigerian time (Africa/Lagos = WAT UTC+1, no DST)
+    const options = { timeZone: 'Africa/Lagos', hour12: true, hour: 'numeric', minute: '2-digit', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    const full = now.toLocaleString('en-NG', options);
+    const hour24 = parseInt(now.toLocaleString('en-US', { timeZone: 'Africa/Lagos', hour: 'numeric', hour12: false }));
+    const hour12 = now.toLocaleString('en-US', { timeZone: 'Africa/Lagos', hour: 'numeric', hour12: true });
+    const minute = now.toLocaleString('en-US', { timeZone: 'Africa/Lagos', minute: '2-digit' });
+    
+    let period = '';
+    let greeting = '';
+    let greetingInstruction = '';
+    
+    if (hour24 >= 0 && hour24 < 5) {
+      period = 'late night / early morning (12am - 4:59am)';
+      greeting = 'Hello';
+      greetingInstruction = `It's ${hour12}:${minute} AM WAT - very late night/early morning. DO NOT say "Good evening" or "Good morning" - it's awkward at 3am. Use neutral "Hello" or "Hi" or "Hope you're sleeping well" or no time greeting at all. Example: "Hello, hope you dey fine" NOT "Good evening" at 3am.`;
+    } else if (hour24 >= 5 && hour24 < 12) {
+      period = 'morning (5am - 11:59am)';
+      greeting = 'Good morning';
+      greetingInstruction = `It's morning ${hour12}:${minute} AM WAT. Use "Good morning" greeting.`;
+    } else if (hour24 >= 12 && hour24 < 16) {
+      period = 'afternoon (12pm - 3:59pm)';
+      greeting = 'Good afternoon';
+      greetingInstruction = `It's afternoon ${hour12}:${minute} PM WAT. Use "Good afternoon" greeting.`;
+    } else if (hour24 >= 16 && hour24 < 19) {
+      period = 'evening (4pm - 6:59pm)';
+      greeting = 'Good evening';
+      greetingInstruction = `It's evening ${hour12}:${minute} PM WAT. Use "Good evening" greeting.`;
+    } else {
+      period = 'night (7pm - 11:59pm)';
+      greeting = 'Good evening';
+      greetingInstruction = `It's night ${hour12}:${minute} PM WAT. Use "Good evening" (not Good night unless ending chat).`;
+    }
+    
+    return {
+      full,
+      hour24,
+      hour12: `${hour12}:${minute}`,
+      period,
+      greeting,
+      greetingInstruction,
+      formatted: `Current Nigerian time: ${full} (Africa/Lagos WAT). Period: ${period}. Appropriate greeting: ${greeting}. ${greetingInstruction}`
+    };
+  } catch (e) {
+    console.error('Time context error:', e.message);
+    return {
+      full: new Date().toISOString(),
+      hour24: new Date().getHours(),
+      period: 'unknown',
+      greeting: 'Hello',
+      greetingInstruction: 'Use neutral Hello greeting',
+      formatted: `Current time: ${new Date().toLocaleString()} - Use neutral greeting`
+    };
+  }
+}
+
 export async function generateReply(jid, userMessage, history = [], ownerStyleSamples = null, mediaInfo = null) {
   const lowerMsg = userMessage.toLowerCase();
   const paymentKeywords = ['account number', 'acct number', 'a/c number', 'opay', 'bank name', 'send me your account', 'your account', 'account details'];
@@ -89,14 +147,22 @@ export async function generateReply(jid, userMessage, history = [], ownerStyleSa
   const isNewContact = !ownerStyleSamples || ownerStyleSamples.length === 0;
   let dynamicSystemPrompt = '';
 
+  // Nigerian time awareness
+  const timeContext = getNigerianTimeContext();
+  console.log(`⏰ Nigerian time: ${timeContext.formatted}`);
+
   if (isNewContact) {
     // NEW NUMBER: Professional, neutral, keep chat warm until owner returns
     dynamicSystemPrompt = `
 You are handling WhatsApp for Bethel Israel. This is a NEW contact - you have never chatted with them before, so you don't know owner's unique style with them yet.
 
+⏰ TIME AWARENESS - CRITICAL:
+${timeContext.formatted}
+You MUST use time-appropriate greeting based on Nigerian time above. At 3am, NEVER say "Good evening" - say "Hello" instead. Follow greetingInstruction exactly.
+
 YOUR JOB FOR NEW CONTACTS:
 1. Be PROFESSIONAL, NEUTRAL, WARM, and HELPFUL - not overly casual or pidgin-heavy
-2. You are the owner, but keep it neutral: "Good evening, how can I help?" not too personal
+2. You are the owner, but keep it neutral: Use time-appropriate greeting from above - e.g. "${timeContext.greeting}, how can I help?" - use "${timeContext.greeting}" not wrong time greeting
 3. Never say you are AI/bot. You are human owner.
 4. Keep conversation going helpfully, but don't make promises or share sensitive info
 5. If they ask for account/bank: ${config.bankInfo ? `Share: ${config.bankInfo}` : `Say: "Let me confirm and send it privately shortly" - NEVER invent numbers`}
@@ -104,17 +170,22 @@ YOUR JOB FOR NEW CONTACTS:
 7. Keep it professional until owner returns to give perspective
 8. Remember: This is first impression - be respectful, concise, helpful
 9. Use minimal emojis, professional tone
+10. TIME: ${timeContext.greetingInstruction}
 
 Base: ${config.systemPrompt}
 
-You are handling new contact professionally and neutrally until owner returns.
+You are handling new contact professionally and neutrally until owner returns. Nigerian time now: ${timeContext.full}
 `;
-    console.log(`🆕 NEW CONTACT ${jid} - using professional neutral mode`);
+    console.log(`🆕 NEW CONTACT ${jid} - using professional neutral mode - ${timeContext.greeting} (${timeContext.period})`);
   } else {
     // KNOWN CONTACT: Mimic owner's unique style with THIS person exactly
     const styleExamples = ownerStyleSamples.slice(-15).join('\n- ');
     dynamicSystemPrompt = `
 You are NOT AI. You ARE Bethel Israel, owner of this WhatsApp. You are chatting with someone you KNOW WELL.
+
+⏰ TIME AWARENESS - CRITICAL:
+${timeContext.formatted}
+You MUST use time-appropriate greeting. At 3am Nigerian time, NEVER say "Good evening" - it's 3am! Use "Hello" or no time greeting. Follow greetingInstruction exactly. Owner would never say "Good evening" at 3am.
 
 CRITICAL - MIMIC OWNER'S UNIQUE STYLE WITH THIS SPECIFIC PERSON:
 Owner chats DIFFERENTLY with different people. For THIS person, owner chats like:
@@ -132,14 +203,17 @@ You must:
 5. Keep WhatsApp style - usually 1-2 lines, not essay
 6. Remember context from history
 7. Be seamless - they should think it's owner
+8. TIME: Use "${timeContext.greeting}" or neutral Hello based on ${timeContext.period}. ${timeContext.greetingInstruction}
 
 SAFETY: ${config.bankInfo ? `Account: ${config.bankInfo}. Share exactly when asked.` : `Never invent account numbers. Say private.`}
 
 Base: ${config.systemPrompt}
 
-Reply as owner would with THIS specific person, using their unique style examples above. Be 100% seamless.
+Current Nigerian time: ${timeContext.full} - Use appropriate greeting "${timeContext.greeting}" for this time, NOT wrong time.
+
+Reply as owner would with THIS specific person, using their unique style examples above. Be 100% seamless and time-aware.
 `;
-    console.log(`🎭 KNOWN CONTACT ${jid} - using learned style: ${ownerStyleSamples.length} samples`);
+    console.log(`🎭 KNOWN CONTACT ${jid} - using learned style: ${ownerStyleSamples.length} samples - ${timeContext.greeting} (${timeContext.period})`);
   }
 
   if (mediaInfo) {

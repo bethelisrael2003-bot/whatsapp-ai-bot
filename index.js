@@ -5,7 +5,7 @@ import http from 'http';
 import { config, validateConfig } from './config.js';
 import { createAuthState } from './auth.js';
 import { getMemoryStore } from './memory.js';
-import { generateReply, isHandoffRequest, parseOwnerCommand, getOwnerHelpText } from './ai.js';
+import { generateReply, isHandoffRequest, parseOwnerCommand, getOwnerHelpText, getNigerianTimeContext } from './ai.js';
 import { extractOwnerStyleFromExport } from './import.js';
 import { getAgentManager, parseAgentCommand, parseNaturalAgentIntent, extractNumbersFromVcard, extractNumbersRobust } from './agent.js';
 
@@ -419,6 +419,9 @@ async function handleAgentCommand(agentCmd, ownerJid) {
       }
       console.log(`🎭 Gender hint for ${targetJid}: ${genderHint} (from ${styleTexts.length} samples)`);
       
+      // Nigerian time awareness
+      const timeCtx = getNigerianTimeContext();
+      
       let initialMsg = '';
       try {
         let genderInstruction = '';
@@ -435,32 +438,36 @@ Context:
 - Detected gender hint from history: ${genderHint}
 - Owner style samples: ${styleTexts.slice(-5).join(' | ').slice(0,300)}
 - Goal says to address female as "ma" and male as "Sir" based on previous chat - USE ${genderHint}
+- TIME: ${timeCtx.formatted} - You MUST use time-appropriate greeting. ${timeCtx.greetingInstruction} At 3am, NEVER say Good evening, use Hello instead.
 
-Write ONLY the first message as owner would, in their unique style with this person. Be natural, casual, Nigerian style but respectful. Keep short 1-2 lines. Start conversation now. No explanation, just the message. Include appropriate title (ma/Sir) if you know gender.`;
+Write ONLY the first message as owner would, in their unique style with this person. Be natural, casual, Nigerian style but respectful. Keep short 1-2 lines. Use "${timeCtx.greeting}" or neutral Hello as appropriate for ${timeCtx.period}. Start conversation now. No explanation, just the message. Include appropriate title (ma/Sir) if you know gender and time-appropriate greeting.`;
         initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null);
         console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,120)}...`);
       } catch (e) {
         console.error(`❌ Failed to generate initial msg for ${targetJid}:`, e.message);
+        // Time-aware fallback
+        const fallbackGreeting = timeCtx.greeting === 'Hello' ? 'Hello' : timeCtx.greeting;
         if (genderHint.includes('female')) {
-          initialMsg = `Hello ma, how you dey? Hope you dey fine? 🙏`;
+          initialMsg = `${fallbackGreeting} ma, how you dey? Hope you dey fine? 🙏`;
         } else if (genderHint.includes('male')) {
-          initialMsg = `Hello Sir, how you dey? Hope you dey fine? 🙏`;
+          initialMsg = `${fallbackGreeting} Sir, how you dey? Hope you dey fine? 🙏`;
         } else if (goal.toLowerCase().includes('project')) {
-          initialMsg = `Boss, how far? How the project dey go? Any update? 🙏`;
+          initialMsg = `${fallbackGreeting}, how far? How the project dey go? Any update? 🙏`;
         } else {
-          initialMsg = `Hello, how you dey? How body? Hope you dey fine? 🙏`;
+          initialMsg = `${fallbackGreeting}, how you dey? How body? Hope you dey fine? 🙏`;
         }
         if (goal.toLowerCase().includes('greet') || goal.toLowerCase().includes('how they are')) {
-          if (genderHint.includes('female') && !initialMsg.toLowerCase().includes(' ma')) initialMsg = initialMsg.replace('Hello', 'Hello ma,');
-          if (genderHint.includes('male') && !initialMsg.toLowerCase().includes('sir')) initialMsg = initialMsg.replace('Hello', 'Hello Sir,');
+          if (genderHint.includes('female') && !initialMsg.toLowerCase().includes(' ma')) initialMsg = initialMsg.replace(fallbackGreeting, `${fallbackGreeting} ma,`);
+          if (genderHint.includes('male') && !initialMsg.toLowerCase().includes('sir')) initialMsg = initialMsg.replace(fallbackGreeting, `${fallbackGreeting} Sir,`);
         }
-        console.log(`🤖 Using fallback initial msg: ${initialMsg}`);
+        console.log(`🤖 Using fallback initial msg (${timeCtx.greeting}): ${initialMsg}`);
       }
 
       if (!initialMsg || initialMsg.includes('Network dey worry') || initialMsg.length < 3) {
-        if (genderHint.includes('female')) initialMsg = `Hello ma, how you dey? ${goal.slice(0,60)} 🙏`;
-        else if (genderHint.includes('male')) initialMsg = `Hello Sir, how you dey? ${goal.slice(0,60)} 🙏`;
-        else initialMsg = `Hello, how you dey? ${goal.slice(0,60)} 🙏`;
+        const fbGreet = timeCtx.greeting;
+        if (genderHint.includes('female')) initialMsg = `${fbGreet} ma, how you dey? ${goal.slice(0,60)} 🙏`;
+        else if (genderHint.includes('male')) initialMsg = `${fbGreet} Sir, how you dey? ${goal.slice(0,60)} 🙏`;
+        else initialMsg = `${fbGreet}, how you dey? ${goal.slice(0,60)} 🙏`;
       }
       
       await delayRandom();
@@ -524,7 +531,8 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     const ownerStyle = await memory.getOwnerStyle(jid);
     const styleTexts = ownerStyle.map(s => s.content);
     
-    const goalPrompt = `You are in an AGENT TASK. Your goal: ${task.goal}. You are chatting with ${jid.split('@')[0]}. Continue conversation to achieve goal. Current step ${task.steps}/${task.maxSteps}. Be owner, use unique style, be seamless. If goal achieved, say so naturally and wrap up.`;
+    const timeCtxReply = getNigerianTimeContext();
+    const goalPrompt = `You are in an AGENT TASK. Your goal: ${task.goal}. You are chatting with ${jid.split('@')[0]}. Continue conversation to achieve goal. Current step ${task.steps}/${task.maxSteps}. Be owner, use unique style, be seamless. If goal achieved, say so naturally and wrap up. TIME: ${timeCtxReply.formatted} - Use time-appropriate greeting if greeting needed.`;
     
     const fullHistory = [...history.slice(0, -1), { role: 'system', content: goalPrompt }];
     
