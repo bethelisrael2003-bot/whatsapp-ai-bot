@@ -391,6 +391,21 @@ async function handleMessage(msg) {
   const activeTask = await agentManager.getTask(jid);
   if (activeTask) {
     console.log(`🤖 Agent task active for ${jid}: ${activeTask.goal}`);
+    // Transcribe voice/video for agent tasks too
+    if (mediaInfo && (mediaInfo.type === 'voice' || mediaInfo.type === 'audio' || mediaInfo.type === 'video')) {
+      try {
+        console.log(`📥 Agent: Downloading ${mediaInfo.type} for transcription...`);
+        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
+        const transcribed = await transcribeAudio(buffer, mediaInfo.mimeType || 'audio/ogg');
+        if (transcribed) {
+          console.log(`🎙️ Agent voice transcribed: "${transcribed.slice(0,100)}..."`);
+          messageContent = transcribed;
+          mediaInfo.transcription = transcribed;
+        }
+      } catch (e) {
+        console.error(`❌ Agent transcription failed: ${e.message}`);
+      }
+    }
     await handleAgentReply(jid, messageContent, mediaInfo, activeTask);
     return;
   }
@@ -432,6 +447,8 @@ async function handleMessage(msg) {
     await delayRandom();
 
     let mediaForAI = null;
+    let transcribedText = null;
+    
     if (mediaInfo && (mediaInfo.type === 'image' || mediaInfo.type === 'sticker')) {
       try {
         console.log(`📥 Downloading ${mediaInfo.type} for AI...`);
@@ -440,9 +457,44 @@ async function handleMessage(msg) {
         mediaForAI = { type: mediaInfo.type, base64, mimeType: mediaInfo.mimeType || (mediaInfo.type === 'sticker' ? 'image/webp' : 'image/jpeg'), caption: mediaInfo.caption || '', emoji: mediaInfo.emoji || '' };
         console.log(`✅ Downloaded ${mediaInfo.type}: ${buffer.length} bytes`);
       } catch (e) { console.error(`❌ Failed download ${mediaInfo.type}:`, e.message); }
+    } else if (mediaInfo && (mediaInfo.type === 'voice' || mediaInfo.type === 'audio')) {
+      try {
+        console.log(`📥 Downloading ${mediaInfo.type} for transcription...`);
+        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
+        console.log(`✅ Downloaded ${mediaInfo.type}: ${buffer.length} bytes, transcribing...`);
+        transcribedText = await transcribeAudio(buffer, mediaInfo.mimeType || 'audio/ogg');
+        if (transcribedText) {
+          console.log(`🎙️ Voice transcribed to: "${transcribedText.slice(0,120)}..."`);
+          // Use transcribed text as the actual message content
+          messageContent = transcribedText;
+          // Keep media info for context
+          mediaForAI = { type: mediaInfo.type, transcription: transcribedText, mimeType: mediaInfo.mimeType };
+        } else {
+          console.log(`⚠️ Voice transcription failed, will handle as voice note`);
+          mediaForAI = { type: mediaInfo.type, transcription: null, mimeType: mediaInfo.mimeType };
+        }
+      } catch (e) { console.error(`❌ Failed download/transcribe ${mediaInfo.type}:`, e.message); }
+    } else if (mediaInfo && mediaInfo.type === 'video') {
+      try {
+        // If video has caption, use caption, but also try to transcribe audio
+        if (!mediaInfo.caption || mediaInfo.caption.length < 5) {
+          console.log(`📥 Downloading video for transcription...`);
+          const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
+          console.log(`✅ Downloaded video: ${buffer.length} bytes, trying transcription...`);
+          transcribedText = await transcribeAudio(buffer, mediaInfo.mimeType || 'video/mp4');
+          if (transcribedText) {
+            console.log(`🎬 Video audio transcribed: "${transcribedText.slice(0,120)}..."`);
+            const captionPart = mediaInfo.caption ? `${mediaInfo.caption} ` : '';
+            messageContent = `${captionPart}[Video says: ${transcribedText}]`.trim();
+            mediaForAI = { type: 'video', transcription: transcribedText, caption: mediaInfo.caption || '', mimeType: mediaInfo.mimeType };
+          }
+        }
+      } catch (e) { console.error(`❌ Failed video transcription:`, e.message); }
     }
 
-    const aiReply = await generateReply(jid, messageContent || historyText, history.slice(0, -1), ownerStyleTexts, mediaForAI);
+    // If we have transcription, use it as the message, otherwise use original
+    const finalMessageForAI = transcribedText || messageContent || historyText;
+    const aiReply = await generateReply(jid, finalMessageForAI, history.slice(0, -1), ownerStyleTexts, mediaForAI);
 
     await sock.sendMessage(jid, { text: aiReply });
     console.log(`🤖 Replied as YOU to ${contactName}: ${aiReply.slice(0,100)}...`);
@@ -586,7 +638,32 @@ Write ONLY the first message as owner would, in their unique style with this per
 
 async function handleAgentReply(jid, messageContent, mediaInfo, task) {
   try {
-    const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
+    // Handle voice note transcription for agent replies too
+    let actualContent = messageContent;
+    let transcription = null;
+    
+    if (mediaInfo && (mediaInfo.type === 'voice' || mediaInfo.type === 'audio' || mediaInfo.type === 'video')) {
+      try {
+        // We need original msg to download - we don't have it here, so we try to use messageContent if it's transcription already
+        // For agent flow, mediaInfo comes from extractContent, but buffer not available
+        // We will try to handle if messageContent is [Voice note] - try to get buffer via global? 
+        // For now, if mediaInfo has no transcription, we will attempt to download using last message
+        // Simplification: If it's voice and messageContent is placeholder, we will note it and still generate reply
+        // The main transcription happens in handleMessage before calling this, but for agent we need to handle msg object
+        // Actually handleMessage for agent path doesn't download, so we need to handle transcription in handleMessage before
+        // This is called from handleMessage which already has mediaInfo but not buffer
+        // We'll attempt transcription if we can get buffer from msg - but we don't have msg here
+        // So we will just use messageContent as is, but if it's placeholder, we add context
+        if (messageContent && (messageContent.includes('[Voice') || messageContent.includes('[Audio') || messageContent.includes('[Video'))) {
+          // Try to indicate it was voice
+          actualContent = `${messageContent} (voice note - transcription not available in agent flow, respond naturally asking for clarification if needed)`;
+        }
+      } catch (e) {
+        console.error(`Agent transcription error: ${e.message}`);
+      }
+    }
+    
+    const historyText = actualContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
     await memory.addMessage(jid, 'user', historyText);
     
     task.history.push({ role: 'user', content: historyText });
@@ -612,8 +689,11 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     await delayRandom();
     
     let mediaForAI = null;
+    if (transcription) {
+      mediaForAI = { type: 'voice', transcription, mimeType: 'audio/ogg' };
+    }
     
-    const aiReply = await generateReply(jid, messageContent || historyText, fullHistory, styleTexts, mediaForAI);
+    const aiReply = await generateReply(jid, actualContent || historyText, fullHistory, styleTexts, mediaForAI);
     
     await sock.sendMessage(jid, { text: aiReply });
     console.log(`🤖 Agent replied to ${jid}: ${aiReply.slice(0,100)}...`);
@@ -778,6 +858,81 @@ function delayRandom() {
   const min = config.replyDelayMin;
   const max = config.replyDelayMax;
   return delay(Math.floor(Math.random() * (max - min + 1)) + min);
+}
+
+async function transcribeAudio(buffer, mimeType = 'audio/ogg') {
+  // Try Groq Whisper first (free, fast, no card)
+  if (config.groqApiKey) {
+    try {
+      console.log(`🎙️ Transcribing audio with Groq Whisper (${mimeType}, ${buffer.length} bytes)...`);
+      const formData = new FormData();
+      // Determine extension from mimeType
+      let ext = 'ogg';
+      if (mimeType.includes('mp4')) ext = 'mp4';
+      else if (mimeType.includes('mpeg') || mimeType.includes('mp3')) ext = 'mp3';
+      else if (mimeType.includes('wav')) ext = 'wav';
+      else if (mimeType.includes('webm')) ext = 'webm';
+      else if (mimeType.includes('ogg')) ext = 'ogg';
+      
+      const blob = new Blob([buffer], { type: mimeType });
+      formData.append('file', blob, `audio.${ext}`);
+      formData.append('model', 'whisper-large-v3-turbo');
+      formData.append('response_format', 'json');
+      // Auto-detect language, but hint for Nigerian English + pidgin
+      // formData.append('language', 'en');
+      
+      const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.groqApiKey}`
+        },
+        body: formData
+      });
+      
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Groq Whisper ${res.status}: ${errText.slice(0,200)}`);
+      }
+      
+      const data = await res.json();
+      const text = data.text || data.transcription || '';
+      if (text) {
+        console.log(`✅ Groq Whisper transcribed: "${text.slice(0,100)}..."`);
+        return text.trim();
+      }
+    } catch (e) {
+      console.error(`❌ Groq Whisper failed: ${e.message.slice(0,300)}`);
+    }
+  }
+  
+  // Fallback: Try HuggingFace Whisper if available
+  if (config.hfApiKey) {
+    try {
+      console.log(`🎙️ Trying HuggingFace Whisper...`);
+      // HF inference API for whisper
+      const res = await fetch(`https://api-inference.huggingface.co/models/openai/whisper-large-v3-turbo`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.hfApiKey}`,
+          'Content-Type': mimeType
+        },
+        body: buffer
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.text || data.transcription || '';
+        if (text) {
+          console.log(`✅ HF Whisper: "${text.slice(0,100)}..."`);
+          return text.trim();
+        }
+      }
+    } catch (e) {
+      console.error(`❌ HF Whisper failed: ${e.message.slice(0,200)}`);
+    }
+  }
+  
+  console.log(`⚠️ No transcription available, will handle as voice note without text`);
+  return null;
 }
 
 process.on('SIGINT', async () => {

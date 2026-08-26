@@ -224,11 +224,22 @@ Reply as owner would with THIS specific person, using their unique style example
       dynamicSystemPrompt += `\nUSER SENT STICKER. React ${isNewContact ? 'professionally with slight humor' : 'like owner would - matching their sticker style'}.`;
       if (!userMessage || userMessage === '[Sticker]') userMessage = isNewContact ? "Nice sticker, thanks 😊" : "Haha nice sticker 😂";
     } else if (mediaInfo.type === 'video') {
-      dynamicSystemPrompt += `\nUSER SENT VIDEO${mediaInfo.caption ? ` caption: "${mediaInfo.caption}"` : ''}. React naturally.`;
-      userMessage = mediaInfo.caption || userMessage || "See this video";
+      if (mediaInfo.transcription) {
+        dynamicSystemPrompt += `\nUSER SENT VIDEO with audio transcribed as: "${mediaInfo.transcription}"${mediaInfo.caption ? ` and caption: "${mediaInfo.caption}"` : ''}. The transcription is what they SAID in the video. Respond naturally to what they said, in ${isNewContact ? 'professional neutral' : 'owner unique'} style. Don't mention transcription, just respond to content.`;
+        if (!userMessage || userMessage.startsWith('[Video')) userMessage = mediaInfo.transcription;
+      } else {
+        dynamicSystemPrompt += `\nUSER SENT VIDEO${mediaInfo.caption ? ` caption: "${mediaInfo.caption}"` : ''}. React naturally, ask about video if needed.`;
+        userMessage = mediaInfo.caption || userMessage || "See this video";
+      }
     } else if (mediaInfo.type === 'voice' || mediaInfo.type === 'audio') {
-      dynamicSystemPrompt += `\nUSER SENT VOICE NOTE. Acknowledge ${isNewContact ? 'professionally' : 'like owner would'}.`;
-      userMessage = userMessage || "Voice note received";
+      if (mediaInfo.transcription) {
+        dynamicSystemPrompt += `\nUSER SENT VOICE NOTE transcribed as: "${mediaInfo.transcription}". This is what they SAID. Respond directly to what they said, as if you heard it. Be natural, don't say "I transcribed your voice note" - just reply to the content like owner would. In ${isNewContact ? 'professional neutral' : 'owner unique'} style.`;
+        // userMessage already set to transcription in index.js, but ensure
+        if (!userMessage || userMessage === '[Voice note]' || userMessage === '[Audio]') userMessage = mediaInfo.transcription;
+      } else {
+        dynamicSystemPrompt += `\nUSER SENT VOICE NOTE but transcription failed. Acknowledge warmly ${isNewContact ? 'professionally' : 'like owner would'}: "Got your voice note" and ask them to type if important, or respond based on context. Don't just say "[Voice note]".`;
+        userMessage = userMessage || "Voice note received - transcription failed, but user sent voice";
+      }
     }
   }
 
