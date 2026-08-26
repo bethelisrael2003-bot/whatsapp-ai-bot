@@ -275,12 +275,37 @@ export function parseOwnerCommand(text) {
     const target = text.split(' ')[1]?.replace(/[^0-9]/g, '');
     return { action: 'style', target };
   }
-  if (lower.startsWith('/send ')) {
-    // /send 2348012345678 Hello boss how far
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 3) return { action: 'send', target: '', message: '' };
-    const target = parts[1].replace(/[^0-9]/g, '');
-    const message = parts.slice(2).join(' ');
+  if (lower.startsWith('/send ') || lower.startsWith('/sent ')) {
+    // Support: /send 0901 434 7620 0811 003 3639 Hello everyone
+    // Find where numbers end and message starts (first word with letters)
+    const rest = text.slice(text.toLowerCase().indexOf(' ', 1)).trim(); // after /send
+    if (!rest) return { action: 'send', target: '', message: '' };
+    const tokens = rest.split(/\s+/);
+    let splitIdx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      if (/[a-zA-Z]{2,}/.test(tokens[i]) && !/^[0-9]+$/.test(tokens[i])) {
+        // If token contains letters and is not purely numbers, it's start of message
+        // But check if it's part of number like "0901" - pure digits, skip
+        // Also need to ensure remaining tokens after have letters (not just number groups)
+        splitIdx = i;
+        break;
+      }
+    }
+    let target, message;
+    if (splitIdx > 0) {
+      target = tokens.slice(0, splitIdx).join(' ');
+      message = tokens.slice(splitIdx).join(' ');
+    } else {
+      // Fallback: old behavior - first token is target, rest is message
+      // For backward compat with single number
+      target = tokens[0] || '';
+      message = tokens.slice(1).join(' ');
+    }
+    // If message contains |, this is actually agent command, let agent parser handle it
+    // Return null so agent parser gets chance (handleMessage checks agent first)
+    if (message.includes('|') || target.includes('|') || rest.includes('|')) {
+      return null;
+    }
     return { action: 'send', target, message };
   }
   if (lower === '/status' || lower === '/stats') return { action: 'status' };

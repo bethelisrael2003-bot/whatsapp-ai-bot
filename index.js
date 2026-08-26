@@ -335,32 +335,73 @@ async function handleAgentCommand(agentCmd, ownerJid) {
       const styleTexts = ownerStyle.map(s => s.content);
       const history = await memory.getHistory(targetJid);
       
+      // Detect gender from owner style history (how owner addressed them)
+      let genderHint = 'unknown';
+      const styleCombined = styleTexts.join(' ').toLowerCase();
+      if (styleCombined.includes(' ma ') || styleCombined.includes(' ma,') || styleCombined.match(/\bma\b.*\?/) || styleCombined.includes(' madam') || styleCombined.includes(' sis') || styleCombined.includes(' aunty')) {
+        genderHint = 'female - address as ma';
+      } else if (styleCombined.includes(' sir') || styleCombined.includes(' bro') || styleCombined.includes(' boss') && !styleCombined.includes(' ma ')) {
+        // Check more specifically for Sir
+        if (styleCombined.includes(' sir')) genderHint = 'male - address as Sir';
+      }
+      // Also check history for owner addressing
+      const historyText = history.map(h => h.content).join(' ').toLowerCase();
+      if (genderHint === 'unknown') {
+        if (historyText.includes(' ma ') || historyText.includes(' madam')) genderHint = 'female - address as ma';
+        else if (historyText.includes(' sir ')) genderHint = 'male - address as Sir';
+      }
+      console.log(`🎭 Gender hint for ${targetJid}: ${genderHint} (from ${styleTexts.length} samples)`);
+      
       // Generate initial message with goal - with fallback
       let initialMsg = '';
       try {
-        const initialPrompt = `You need to start a conversation with this contact to achieve this goal: ${goal}. Write ONLY the first message as owner would, in their unique style with this person. Be natural, not robotic. Keep short. Start conversation now. No explanation, just the message.`;
+        let genderInstruction = '';
+        if (goal.toLowerCase().includes(' ma ') || goal.toLowerCase().includes(' sir') || goal.toLowerCase().includes('female') || goal.toLowerCase().includes('male')) {
+          genderInstruction = `IMPORTANT: ${goal}. For gender: ${genderHint}. If female use "ma", if male use "Sir" based on previous chat style. ${genderHint !== 'unknown' ? `This contact is likely ${genderHint}, so use that title.` : 'Detect gender from how owner called them before (ma for female, Sir for male).'}`;
+        } else {
+          genderInstruction = goal;
+        }
+        
+        const initialPrompt = `You need to start a conversation with this contact to achieve this goal: ${genderInstruction}. 
+
+Context:
+- Contact: ${targetJid.split('@')[0]}
+- Detected gender hint from history: ${genderHint}
+- Owner style samples: ${styleTexts.slice(-5).join(' | ').slice(0,300)}
+- Goal says to address female as "ma" and male as "Sir" based on previous chat - USE ${genderHint}
+
+Write ONLY the first message as owner would, in their unique style with this person. Be natural, casual, Nigerian style but respectful. Keep short 1-2 lines. Start conversation now. No explanation, just the message. Include appropriate title (ma/Sir) if you know gender.`;
         initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null);
-        console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,100)}...`);
+        console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,120)}...`);
       } catch (e) {
         console.error(`❌ Failed to generate initial msg for ${targetJid}:`, e.message);
-        // Fallback message based on goal
-        if (goal.toLowerCase().includes('project')) {
+        // Fallback message based on goal and gender
+        if (genderHint.includes('female')) {
+          initialMsg = `Hello ma, how you dey? Hope you dey fine? 🙏`;
+        } else if (genderHint.includes('male')) {
+          initialMsg = `Hello Sir, how you dey? Hope you dey fine? 🙏`;
+        } else if (goal.toLowerCase().includes('project')) {
           initialMsg = `Boss, how far? How the project dey go? Any update? 🙏`;
-        } else if (goal.toLowerCase().includes('money') || goal.toLowerCase().includes('payment')) {
-          initialMsg = `My guy, how far? About that money matter, any update?`;
         } else {
-          initialMsg = `Boss, how you dey? Quick one - ${goal.slice(0,100)}`;
+          initialMsg = `Hello, how you dey? How body? Hope you dey fine? 🙏`;
+        }
+        // Append casual continuation if goal mentions greet
+        if (goal.toLowerCase().includes('greet') || goal.toLowerCase().includes('how they are')) {
+          if (genderHint.includes('female') && !initialMsg.toLowerCase().includes(' ma')) initialMsg = initialMsg.replace('Hello', 'Hello ma,');
+          if (genderHint.includes('male') && !initialMsg.toLowerCase().includes('sir')) initialMsg = initialMsg.replace('Hello', 'Hello Sir,');
         }
         console.log(`🤖 Using fallback initial msg: ${initialMsg}`);
       }
 
       // Ensure message not empty and not network worry
       if (!initialMsg || initialMsg.includes('Network dey worry') || initialMsg.length < 3) {
-        initialMsg = `Boss, how far? ${goal.slice(0,80)} 🙏`;
+        if (genderHint.includes('female')) initialMsg = `Hello ma, how you dey? ${goal.slice(0,60)} 🙏`;
+        else if (genderHint.includes('male')) initialMsg = `Hello Sir, how you dey? ${goal.slice(0,60)} 🙏`;
+        else initialMsg = `Hello, how you dey? ${goal.slice(0,60)} 🙏`;
       }
       
       await delayRandom();
-      console.log(`📤 Sending agent message to ${targetJid}: ${initialMsg.slice(0,80)}...`);
+      console.log(`📤 Sending agent message to ${targetJid}: ${initialMsg.slice(0,100)}...`);
       try {
         await sock.sendMessage(targetJid, { text: initialMsg });
         console.log(`✅ Agent message SENT to ${targetJid}`);
@@ -372,7 +413,6 @@ async function handleAgentCommand(agentCmd, ownerJid) {
         started++;
       } catch (sendErr) {
         console.error(`❌ Failed to SEND message to ${targetJid}:`, sendErr.message);
-        // Try alternative JID format (LID vs s.whatsapp.net) - try without retry
         try {
           console.log(`🔄 Retrying send to ${targetJid} after 2s...`);
           await delay(2000);
@@ -398,7 +438,7 @@ async function handleAgentCommand(agentCmd, ownerJid) {
   }
   
   try {
-    await sock.sendMessage(ownerJid, { text: `🚀 *Agent Launched*\n\n✅ Started: ${started}\n❌ Failed: ${failed}\n\nI will chat with them and report back when goal is achieved. You can check active tasks with /status\n\nIf message didn't drop, check:\n1. Number is on WhatsApp\n2. You have chatted with them before\n3. Try /send command instead: /send ${numbers[0]} your message` });
+    await sock.sendMessage(ownerJid, { text: `🚀 *Agent Launched*\n\n✅ Started: ${started}\n❌ Failed: ${failed}\nNumbers: ${numbers.join(', ')}\n\nI will chat with them and report back when goal is achieved. Check /status\n\nTip: Use commas for multiple numbers: /agent 0901 434 7620, 0811 003 3639 | Goal: ...\nOr spaces: /sent 0901 434 7620 0811 003 3639 | greet them as ma/Sir` });
   } catch {}
 }
 
@@ -525,21 +565,32 @@ async function handleOwnerCommand(cmd, currentJid) {
       break;
     }
     case 'send': {
-      if (!cmd.target || !cmd.message) { await sock.sendMessage(sendTo, { text: 'Usage: /send 2348012345678 Your message here\n\nExample: /send 08051934689 Hello boss how far?' }); return; }
-      const { normalizeNumber } = await import('./agent.js');
-      const normalized = normalizeNumber(cmd.target);
-      if (!normalized) { await sock.sendMessage(sendTo, { text: `❌ Invalid number: ${cmd.target}` }); return; }
-      const targetJid = `${normalized}@s.whatsapp.net`;
-      try {
-        console.log(`📤 Owner /send to ${targetJid}: ${cmd.message.slice(0,80)}...`);
-        await sock.sendMessage(targetJid, { text: cmd.message });
-        await memory.addMessage(targetJid, 'assistant', cmd.message);
-        await memory.addOwnerMessage(targetJid, cmd.message);
-        await sock.sendMessage(sendTo, { text: `✅ Sent to ${normalized}:\n\n${cmd.message}` });
-      } catch (e) {
-        console.error(`❌ /send failed for ${targetJid}:`, e.message);
-        await sock.sendMessage(sendTo, { text: `❌ Failed to send to ${normalized}: ${e.message}\n\nTry again or check if number is on WhatsApp` });
+      if (!cmd.target || !cmd.message) { await sock.sendMessage(sendTo, { text: 'Usage: /send 2348012345678 Your message here\n\nExamples:\n/send 08051934689 Hello boss how far?\n/send 0901 434 7620, 0811 003 3639 Hello everyone\n/sent 0901 434 7620 0811 003 3639 | Goal: greet them (this also works as agent)' }); return; }
+      const { normalizeNumber, extractNumbersRobust } = await import('./agent.js');
+      // Support multiple numbers for /send broadcast
+      let targets = extractNumbersRobust(cmd.target);
+      if (targets.length === 0) {
+        const single = normalizeNumber(cmd.target);
+        if (single) targets = [single];
       }
+      if (targets.length === 0) { await sock.sendMessage(sendTo, { text: `❌ Invalid number: ${cmd.target}` }); return; }
+      
+      let sent = 0, failed = 0;
+      for (const normalized of targets) {
+        const targetJid = `${normalized}@s.whatsapp.net`;
+        try {
+          console.log(`📤 Owner /send to ${targetJid}: ${cmd.message.slice(0,80)}...`);
+          await sock.sendMessage(targetJid, { text: cmd.message });
+          await memory.addMessage(targetJid, 'assistant', cmd.message);
+          await memory.addOwnerMessage(targetJid, cmd.message);
+          sent++;
+          if (targets.length > 1) await delay(3000);
+        } catch (e) {
+          console.error(`❌ /send failed for ${targetJid}:`, e.message);
+          failed++;
+        }
+      }
+      await sock.sendMessage(sendTo, { text: `✅ Broadcast result: Sent ${sent}, Failed ${failed} to ${targets.join(', ')}\n\nMessage: ${cmd.message}` });
       break;
     }
     case 'style': {

@@ -21,20 +21,14 @@ export function normalizeNumber(num) {
   else if (n.startsWith('234') && n.length === 13) {
     // keep
   }
-  // +234... (14 with + removed, but we already removed +) -> if starts with 234 and 14 digits, trim?
   else if (n.startsWith('234') && n.length === 14) {
-    // Sometimes extra digit, keep as is? Try to keep last 13
     if (n.length > 13) n = n.slice(0, 13);
   }
-  // If still starts with 0, remove 0 and add 234
   else if (n.startsWith('0')) {
     n = '234' + n.slice(1);
   }
   
-  // Validate: Nigerian numbers should be 13 digits starting with 234
-  // International: allow 10-15 digits
   if (n.length < 10 || n.length > 15) return null;
-  
   return n;
 }
 
@@ -42,6 +36,78 @@ export function toJid(num) {
   const normalized = normalizeNumber(num);
   if (!normalized) return null;
   return `${normalized}@s.whatsapp.net`;
+}
+
+export function extractNumbersRobust(str) {
+  if (!str) return [];
+  const numbers = [];
+  
+  // Method 1: If commas present, split by comma first (each part may have spaces like "0901 434 7620")
+  if (str.includes(',')) {
+    const parts = str.split(',').map(s => s.trim()).filter(Boolean);
+    for (const p of parts) {
+      const n = normalizeNumber(p);
+      if (n) numbers.push(n);
+    }
+    if (numbers.length > 0) return [...new Set(numbers)];
+  }
+  
+  // Method 2: Regex for spaced Nigerian numbers: 0901 434 7620, 0803 123 4567 etc
+  const spacedRegex = /0[789][01]\d\s*\d{3}\s*\d{4}/g;
+  let m;
+  const regexFound = [];
+  while ((m = spacedRegex.exec(str)) !== null) {
+    const norm = normalizeNumber(m[0]);
+    if (norm) regexFound.push(norm);
+  }
+  if (regexFound.length > 1) {
+    return [...new Set(regexFound)];
+  }
+  if (regexFound.length === 1 && str.replace(/[^0-9\s,]/g,'').trim().split(/\s+/).length <= 3) {
+    // Single number like "0901 434 7620" with only that number
+    return regexFound;
+  }
+  
+  // Method 3: Digits-only chunking - handles "0901 434 7620 0811 003 3639 ..." without commas
+  const digitsOnly = str.replace(/[^0-9]/g, '');
+  if (digitsOnly.length >= 10) {
+    let i = 0;
+    const chunked = [];
+    while (i < digitsOnly.length) {
+      if (digitsOnly.slice(i, i + 3) === '234' && digitsOnly.length - i >= 13) {
+        const cand = digitsOnly.slice(i, i + 13);
+        if (/^234[789][01]\d{7}$/.test(cand)) {
+          chunked.push(cand);
+          i += 13;
+          continue;
+        }
+      }
+      if (digitsOnly[i] === '0' && digitsOnly.length - i >= 11) {
+        const cand = digitsOnly.slice(i, i + 11);
+        if (/^0[789][01]\d{7}$/.test(cand)) {
+          const norm = normalizeNumber(cand);
+          if (norm) chunked.push(norm);
+          i += 11;
+          continue;
+        }
+      }
+      if (/^[789]/.test(digitsOnly[i]) && digitsOnly.length - i >= 10) {
+        const cand = digitsOnly.slice(i, i + 10);
+        if (/^[789][01]\d{8}$/.test(cand)) {
+          const norm = normalizeNumber(cand);
+          if (norm) chunked.push(norm);
+          i += 10;
+          continue;
+        }
+      }
+      i++;
+    }
+    if (chunked.length > 0) return [...new Set(chunked)];
+  }
+  
+  const single = normalizeNumber(str);
+  if (single) return [single];
+  return [];
 }
 
 class AgentManager {
@@ -64,7 +130,6 @@ class AgentManager {
       history: [],
       lastMessageAt: Date.now()
     };
-
     if (this.memory.isRedis) {
       await this.memory.redis.set(taskKey, JSON.stringify(task));
       await this.memory.redis.expire(taskKey, 60 * 60 * 24 * 2);
@@ -180,9 +245,21 @@ export async function getAgentManager(memory, sock) {
 export function parseAgentCommand(text) {
   if (!text) return null;
   const lower = text.toLowerCase().trim();
-  if (!lower.startsWith('/agent ')) return null;
+  
+  // Support /agent, /sent (common typo), /send, /broadcast
+  const prefixes = ['/agent ', '/sent ', '/send ', '/broadcast ', '/agents ', '/bc '];
+  let matchedPrefix = null;
+  for (const p of prefixes) {
+    if (lower.startsWith(p)) {
+      matchedPrefix = p;
+      break;
+    }
+  }
+  if (!matchedPrefix) return null;
 
-  let rest = text.slice(7).trim();
+  let rest = text.slice(matchedPrefix.length).trim();
+  if (!rest) return null;
+  
   let numbersPart = '';
   let goal = '';
 
@@ -195,24 +272,62 @@ export function parseAgentCommand(text) {
     numbersPart = rest.slice(0, idx).trim();
     goal = rest.slice(idx + 3).trim();
   } else {
+    // No delimiter - try to detect where numbers end and goal starts by looking for letters
+    // For "0901 434 7620 0811 003 3639 greet them..."
+    // Find first word with letters
     const tokens = rest.split(/\s+/);
-    numbersPart = tokens[0];
-    goal = tokens.slice(1).join(' ').trim();
+    let splitIdx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      if (/[a-zA-Z]{2,}/.test(tokens[i])) {
+        splitIdx = i;
+        break;
+      }
+    }
+    if (splitIdx > 0) {
+      numbersPart = tokens.slice(0, splitIdx).join(' ');
+      goal = tokens.slice(splitIdx).join(' ').trim();
+    } else {
+      // Only numbers, no goal yet
+      numbersPart = rest;
+      goal = '';
+    }
   }
 
-  // Extract numbers - support comma separated and spaces like "0805 193 4689"
-  // First, try to find all Nigerian-like numbers in the string
-  const rawNumbers = numbersPart.split(',').map(s => s.trim()).filter(Boolean);
-  const numbers = [];
+  let numbers = extractNumbersRobust(numbersPart);
   
-  for (const raw of rawNumbers) {
-    // Remove all non-digits, then normalize
-    const normalized = normalizeNumber(raw);
-    if (normalized) numbers.push(normalized);
+  // If numbersPart didn't yield numbers but rest is all numbers concatenated, try whole rest
+  if (numbers.length === 0) {
+    numbers = extractNumbersRobust(rest);
+    if (numbers.length > 0) {
+      // Try to extract goal from rest after removing number patterns
+      const goalCandidate = rest.replace(/[0-9,\s]+/g, ' ').trim();
+      if (goalCandidate.length > 3 && /[a-zA-Z]/.test(goalCandidate) && goalCandidate !== goal) {
+        // If original goal empty, use this
+        if (!goal) goal = goalCandidate;
+      }
+    }
   }
 
   if (numbers.length === 0) return null;
-  if (!goal) goal = 'Have a friendly conversation and keep it going';
+  if (!goal) goal = 'Greet them casually, ask how they are doing, keep chat going. Address female as ma and male as Sir based on how owner addressed them before.';
 
   return { numbers, goal };
+}
+
+export function getAgentHelpText() {
+  return `🤖 *Agent Mode Help*
+
+/agent 0805 193 4689 | Goal: Ask about project
+/agent 0901 434 7620, 0811 003 3639 | Goal: greet and ask how they are
+/sent 0901 434 7620 0811 003 3639 | greet them (spaces ok, commas ok)
+/send 0805... message - direct send
+
+Supports:
+• 0805 193 4689 (with spaces)
+• 09014347620,08110033639 (comma separated)
+• 0901 434 7620 0811 003 3639 (space separated)
+
+Goal tips:
+• "greet and ask how they are, address female as ma and male as Sir based on previous chat"
+• Bot will use your history to know gender (how you called them before)`;
 }
