@@ -108,17 +108,29 @@ let memory = null;
 let auth = null;
 let pairingCodeRequested = false;
 let agentManager = null;
+let isStarting = false;
+let reconnectTimeout = null;
+let instanceId = Math.random().toString(36).slice(2, 8);
 
 async function startBot() {
+  if (isStarting) {
+    console.log(`⚠️ [${instanceId}] startBot already in progress, skipping duplicate start`);
+    return;
+  }
+  isStarting = true;
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
   try {
     console.log('\n' + '='.repeat(60));
-    console.log('🚀 WhatsApp AI Bot - Ghost + Style + Import + Media + SUPER AGENT');
+    console.log(`🚀 WhatsApp AI Bot - Ghost + Style + Import + Media + SUPER AGENT [${instanceId}]`);
     console.log('='.repeat(60));
     memory = await getMemoryStore();
     auth = await createAuthState();
     agentManager = await getAgentManager(memory, null);
     const { version } = await fetchLatestBaileysVersion();
-    console.log(`📦 Baileys version: ${version.join('.')}`);
+    console.log(`📦 Baileys version: ${version.join('.')} [${instanceId}]`);
     const logger = pino({ level: 'silent' });
     sock = makeWASocket({
       version, auth: auth.state, logger,
@@ -137,7 +149,7 @@ async function startBot() {
       setTimeout(async () => {
         try {
           if (!auth.state.creds.registered) {
-            console.log(`\n📱 Requesting pairing code for ${config.phoneNumber}...`);
+            console.log(`\n📱 [${instanceId}] Requesting pairing code for ${config.phoneNumber}...`);
             const code = await sock.requestPairingCode(config.phoneNumber);
             console.log('\n' + '█'.repeat(60));
             console.log(`🔑 YOUR PAIRING CODE: ${code}`);
@@ -145,9 +157,10 @@ async function startBot() {
             pairingCodeRequested = true;
           }
         } catch (err) {
-          console.error('❌ Pairing code failed:', err.message);
+          console.error(`❌ [${instanceId}] Pairing code failed:`, err.message);
           pairingCodeRequested = false;
-          setTimeout(() => { if (!auth.state.creds.registered) startBot(); }, 10000);
+          isStarting = false;
+          reconnectTimeout = setTimeout(() => { if (!auth.state.creds.registered) startBot(); }, 15000);
         }
       }, 3000);
     }
@@ -157,22 +170,53 @@ async function startBot() {
       if (qr && !config.phoneNumber) { qrcode.generate(qr, { small: true }); }
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`\n🔌 Closed. Status: ${statusCode}, Reason:`, lastDisconnect?.error?.message);
+        const reason = lastDisconnect?.error?.message || 'unknown';
+        console.log(`\n🔌 [${instanceId}] Closed. Status: ${statusCode}, Reason: ${reason}`);
         global.botStatus = `disconnected-${statusCode}`;
+        
+        // Clear sock reference
+        try { if (sock) { await sock.end(); } } catch {}
+        if (global.sockRef === sock) global.sockRef = null;
+        
         if (statusCode === DisconnectReason.loggedOut) {
+          console.log(`🚪 [${instanceId}] Logged out - clearing auth state, need re-pair`);
           if (auth.clearState) await auth.clearState();
+          isStarting = false;
           return;
         }
-        if (shouldReconnect) setTimeout(startBot, 5000);
+        
+        // 440 = Stream Errored (conflict) - another instance is running
+        if (statusCode === 440) {
+          console.log(`⚠️ [${instanceId}] 440 CONFLICT - Another instance is fighting for connection! Waiting 25s before retry to avoid Bad MAC errors...`);
+          console.log(`⚠️ [${instanceId}] This causes "Failed to decrypt" and no response - need single instance`);
+          global.botStatus = 'conflict-440-waiting-25s';
+          isStarting = false;
+          // Wait much longer for 440 to let other instance die
+          reconnectTimeout = setTimeout(() => {
+            console.log(`🔄 [${instanceId}] Retrying after 440 conflict wait...`);
+            startBot();
+          }, 25000 + Math.random() * 10000); // 25-35s
+          return;
+        }
+        
+        // Other disconnects - wait 8s
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        if (shouldReconnect) {
+          console.log(`🔄 [${instanceId}] Will reconnect in 8s...`);
+          isStarting = false;
+          reconnectTimeout = setTimeout(startBot, 8000);
+        } else {
+          isStarting = false;
+        }
       } else if (connection === 'open') {
-        console.log('\n✅ Connected! Ghost + Style + Media + SUPER AGENT ON');
-        console.log(`📞 As: ${sock.user?.id || 'unknown'}`);
-        console.log(`📚 Import: /import | Agent: /agent | Natural language: ON`);
+        console.log(`\n✅ [${instanceId}] Connected! Ghost + Style + Media + SUPER AGENT ON`);
+        console.log(`📞 [${instanceId}] As: ${sock.user?.id || 'unknown'}`);
+        console.log(`📚 [${instanceId}] Import: /import | Agent: /agent | Natural language: ON | Time: Lagos WAT`);
         global.botStatus = 'connected';
         pairingCodeRequested = false;
+        isStarting = false;
       } else if (connection === 'connecting') {
-        console.log('⏳ Connecting...');
+        console.log(`⏳ [${instanceId}] Connecting...`);
         global.botStatus = 'connecting';
       }
     });
@@ -181,14 +225,18 @@ async function startBot() {
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
       for (const msg of messages) {
-        try { await handleMessage(msg); } catch (err) { console.error('Error:', err); }
+        try { await handleMessage(msg); } catch (err) { console.error(`[${instanceId}] Error handling message:`, err); }
       }
     });
 
   } catch (err) {
-    console.error('❌ Fatal:', err);
+    console.error(`❌ [${instanceId}] Fatal:`, err);
     global.botStatus = 'error';
-    setTimeout(startBot, 10000);
+    isStarting = false;
+    reconnectTimeout = setTimeout(startBot, 15000);
+  } finally {
+    // isStarting will be cleared on open or close, but ensure not stuck
+    // Don't clear here if connecting, let connection.update clear it
   }
 }
 
