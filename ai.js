@@ -315,27 +315,36 @@ export function parseOwnerCommand(text) {
 }
 
 export function getOwnerHelpText() {
-  return `🤖 *Owner Commands*
+  return `🤖 *Owner Commands - SUPER INTELLIGENT MODE*
 
-💬 Messaging:
-/send 234... message - Send message directly (any number format, 0805... ok)
-/agent 0805... | Goal: ... - Start autonomous agent to chat for you
-/agents - List active agents
-/stopagent 234... - Stop agent
+🧠 *No slash needed! Just talk naturally in self-chat:*
+• "Greet 0901 434 7620 0811 003 3639, ask how they are, ma for female Sir for male"
+• "Message 0805 193 4689 ask about project"
+• Share contacts via WhatsApp share button, then say "greet them all"
+• "Do same greeting to all contacts I just shared"
+• "0901 434 7620, 0811 003 3639 | greet them"
 
-🔧 Controls:
+💬 *Old style still works:*
+/send 234... message - Direct send (supports multiple)
+/agent 0805... | Goal: ... - Agent with goal
+/broadcast 0901... 0811... | Goal: ...
+
+🔧 *Controls:*
 /pause 234... - Pause bot for contact
 /resume 234... - Resume
 /resume all - Resume all
 /clear 234... - Clear history
 /style 234... - Show learned style
-/status - Status + AI chain
+/status - Status + recent contacts
 /help - This help
 
-How it handles people:
-• KNOWN contacts: Mimics YOUR unique style with THEM
-• NEW numbers: Professional, neutral, warm
+✨ *Intelligence:*
+• Understands numbers with spaces: 0901 434 7620
+• Understands WhatsApp contact cards
+• "them", "all", "same thing" = uses recent shared contacts
+• Detects gender from YOUR history (how you called them ma/Sir)
+• Auto-detects intent - no need to say /agent
 
 AI Chain: Gemini → Groq → Cerebras → GitHub → OpenRouter → Together → Mistral → HF
-Media: Images, Stickers, Voice, Video, Emoji ✅`;
+Media: Images, Stickers, Voice, Video, Contacts, Emoji ✅`;
 }

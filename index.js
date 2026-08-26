@@ -7,7 +7,7 @@ import { createAuthState } from './auth.js';
 import { getMemoryStore } from './memory.js';
 import { generateReply, isHandoffRequest, parseOwnerCommand, getOwnerHelpText } from './ai.js';
 import { extractOwnerStyleFromExport } from './import.js';
-import { getAgentManager, parseAgentCommand } from './agent.js';
+import { getAgentManager, parseAgentCommand, parseNaturalAgentIntent, extractNumbersFromVcard, extractNumbersRobust } from './agent.js';
 
 const server = http.createServer(async (req, res) => {
   if (req.url === '/health' || req.url === '/') {
@@ -18,7 +18,7 @@ const server = http.createServer(async (req, res) => {
     res.end(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Import Old Chats + Agent Control</title><style>body{font-family:system-ui;padding:20px;max-width:700px;margin:auto;background:#f5f5f5} .card{background:white;padding:20px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.1);margin-bottom:20px} textarea{width:100%;height:200px;padding:12px;border:1px solid #ddd;border-radius:8px;font-family:monospace;font-size:13px} input,button{padding:12px;border-radius:8px;border:1px solid #ddd;margin:5px 0;width:100%} button{background:#25D366;color:white;border:none;font-weight:bold;cursor:pointer} button:hover{background:#128C7E} .info{background:#e8f5e9;padding:12px;border-radius:8px;margin:10px 0;font-size:14px} .agent{background:#fff3e0;padding:12px;border-radius:8px;margin:10px 0}</style></head><body>
 <h2>📚 Import Old Chats + 🤖 Agent Control</h2>
 <div class="card"><h3>Import Old Chats</h3><div class="info">Export: WhatsApp → Chat → 3 dots → More → Export → Without media → Copy .txt</div><label>Number (234...):</label><input id="jid" placeholder="2348012345678" /><label>Your name in export:</label><input id="ownerName" placeholder="You" value="You" /><label>Paste .txt:</label><textarea id="chatText"></textarea><button onclick="importChat()">📥 Import</button><div id="result"></div></div>
-<div class="card"><h3>🤖 Agent Control - Message people with goals</h3><div class="agent"><b>How to use from your self-chat:</b><br>/agent 2348012345678 | Goal: Ask for payment and get confirmation<br>/agent 2348012345678,2348023456789 | Goal: Broadcast hello and collect replies<br>Bot will go chat with them and report back to you!</div>
+<div class="card"><h3>🤖 Agent Control - Message people with goals</h3><div class="agent"><b>How to use from your self-chat:</b><br>Just talk naturally! No / needed<br>Examples:<br>• "Greet 0901 434 7620, ask how they are, ma for female Sir for male"<br>• Share contacts via WhatsApp, then say "greet them all"<br>• "0901 434 7620 0811 003 3639 greet them"<br>• Old: /agent 234... | Goal: ...</div>
 <label>Numbers (comma separated):</label><input id="agentNumbers" placeholder="2348012345678,2348023456789" />
 <label>Goal / Task:</label><textarea id="agentGoal" placeholder="Ask them about the project and get them to agree to send Opay. End when they say they will send."></textarea>
 <button onclick="startAgent()">🚀 Start Agent Task</button><div id="agentResult"></div></div>
@@ -52,13 +52,12 @@ async function loadStats(){document.getElementById('stats').innerHTML='⏳...';t
         if (!numbers || !goal) throw new Error('Missing numbers or goal');
         const mem = await getMemoryStore();
         const agentManager = await getAgentManager(mem, global.sockRef);
-        const nums = numbers.split(',').map(n => n.replace(/[^0-9]/g,'')).filter(n => n.length >= 10);
+        const nums = extractNumbersRobust(numbers);
         let started = 0;
         for (const num of nums) {
           const targetJid = `${num}@s.whatsapp.net`;
           const ownerJid = `${config.phoneNumber}@s.whatsapp.net`;
           await agentManager.createTask(targetJid, goal, ownerJid);
-          // Send initial message via agent
           const ownerStyle = await mem.getOwnerStyle(targetJid);
           const styleTexts = ownerStyle.map(s => s.content);
           const history = await mem.getHistory(targetJid);
@@ -66,7 +65,7 @@ async function loadStats(){document.getElementById('stats').innerHTML='⏳...';t
           await global.sockRef.sendMessage(targetJid, { text: initialMsg });
           await mem.addMessage(targetJid, 'assistant', initialMsg);
           started++;
-          await new Promise(r => setTimeout(r, 3000)); // delay between
+          await new Promise(r => setTimeout(r, 3000));
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: `Started ${started} agent tasks with goal: ${goal}` }));
@@ -113,7 +112,7 @@ let agentManager = null;
 async function startBot() {
   try {
     console.log('\n' + '='.repeat(60));
-    console.log('🚀 WhatsApp AI Bot - Ghost + Style + Import + Media + AGENT');
+    console.log('🚀 WhatsApp AI Bot - Ghost + Style + Import + Media + SUPER AGENT');
     console.log('='.repeat(60));
     memory = await getMemoryStore();
     auth = await createAuthState();
@@ -167,9 +166,9 @@ async function startBot() {
         }
         if (shouldReconnect) setTimeout(startBot, 5000);
       } else if (connection === 'open') {
-        console.log('\n✅ Connected! Ghost + Style + Media + AGENT ON');
+        console.log('\n✅ Connected! Ghost + Style + Media + SUPER AGENT ON');
         console.log(`📞 As: ${sock.user?.id || 'unknown'}`);
-        console.log(`📚 Import: /import | Agent: /agent`);
+        console.log(`📚 Import: /import | Agent: /agent | Natural language: ON`);
         global.botStatus = 'connected';
         pairingCodeRequested = false;
       } else if (connection === 'connecting') {
@@ -203,6 +202,8 @@ async function handleMessage(msg) {
   const contactName = msg.pushName || jid.split('@')[0];
   const m = msg.message;
   const { text: messageContent, mediaInfo } = await extractContent(msg);
+  const ownerJid = `${config.phoneNumber}@s.whatsapp.net`;
+  const isSelfChat = jid === ownerJid || jid === `${config.phoneNumber}@s.whatsapp.net`;
 
   // Document import
   if (isFromMe && m?.documentMessage) {
@@ -224,29 +225,97 @@ async function handleMessage(msg) {
     } catch (e) { console.error('Document import error:', e.message); }
   }
 
-  if (isFromMe && messageContent) {
-    // Check agent command first
-    const agentCmd = parseAgentCommand(messageContent);
-    if (agentCmd) {
-      await handleAgentCommand(agentCmd, jid);
+  if (isFromMe) {
+    // ===== SELF-CHAT SUPER INTELLIGENT AGENT =====
+    if (isSelfChat) {
+      // 1. Handle contact sharing (vCard)
+      if (mediaInfo && mediaInfo.type === 'contact') {
+        const numbers = mediaInfo.numbers || [];
+        if (numbers.length > 0) {
+          await agentManager.saveRecentSharedContacts(ownerJid, numbers);
+          console.log(`📇 Owner shared ${numbers.length} contacts in self-chat: ${numbers.join(', ')}`);
+          // If message also has instruction, trigger immediately
+          if (messageContent && messageContent.length > 5 && !messageContent.startsWith('[Contact')) {
+            const intent = await parseNaturalAgentIntent(`${numbers.join(' ')} ${messageContent}`, numbers);
+            if (intent) {
+              await handleAgentCommand(intent, jid);
+              return;
+            }
+          }
+          // If only contacts shared without instruction, store and acknowledge subtly
+          if (!messageContent || messageContent.startsWith('[Contact') || messageContent.length < 10) {
+            // Don't spam, just store silently, but if many contacts, give hint
+            if (numbers.length >= 3) {
+              await sock.sendMessage(jid, { text: `📇 Got ${numbers.length} contacts: ${numbers.join(', ')}\n\nTell me what to do with them - e.g. "greet them as ma/Sir" or "ask about project"` });
+            }
+            return;
+          }
+        }
+      }
+
+      // 2. Check explicit /agent commands first (old style still works)
+      if (messageContent) {
+        const agentCmd = parseAgentCommand(messageContent);
+        if (agentCmd) {
+          await handleAgentCommand(agentCmd, jid);
+          return;
+        }
+        const cmd = parseOwnerCommand(messageContent);
+        if (cmd) { await handleOwnerCommand(cmd, jid); return; }
+      }
+
+      // 3. SUPER INTELLIGENT natural language detection (no slash needed)
+      if (messageContent) {
+        try {
+          const recentContacts = await agentManager.getRecentSharedContacts(ownerJid);
+          const naturalIntent = await parseNaturalAgentIntent(messageContent, recentContacts);
+          if (naturalIntent && naturalIntent.numbers.length > 0) {
+            console.log(`🧠 Natural intent in self-chat: ${naturalIntent.numbers.length} numbers, goal: ${naturalIntent.goal.slice(0,100)}`);
+            await handleAgentCommand(naturalIntent, jid);
+            return;
+          }
+          // If message is just numbers without instruction but looks like a list, save as recent
+          const onlyNumbers = extractNumbersRobust(messageContent);
+          const textWithoutNumbers = messageContent.replace(/[0-9,\s\-\+\(\)]+/g, '').trim();
+          if (onlyNumbers.length >= 1 && textWithoutNumbers.length < 3) {
+            await agentManager.saveRecentSharedContacts(ownerJid, onlyNumbers);
+            await sock.sendMessage(jid, { text: `📇 Saved ${onlyNumbers.length} numbers: ${onlyNumbers.join(', ')}\n\nWhat should I do with them? e.g. "greet them, ask how they are, ma for female Sir for male"` });
+            return;
+          }
+        } catch (e) { console.error('Natural intent error:', e.message); }
+      }
+
+      // 4. If self-chat and no command, learn style but also keep as note
+      if (messageContent && !messageContent.startsWith('/')) {
+        await memory.addOwnerMessage(jid, messageContent);
+        await memory.addMessage(jid, 'assistant', messageContent);
+        console.log(`📝 Self-chat note: "${messageContent.slice(0,80)}..."`);
+      }
       return;
     }
-    const cmd = parseOwnerCommand(messageContent);
-    if (cmd) { await handleOwnerCommand(cmd, jid); return; }
-    if (messageContent && !messageContent.startsWith('/')) {
-      await memory.addOwnerMessage(jid, messageContent);
-      await memory.addMessage(jid, 'assistant', messageContent);
-      console.log(`📝 Learned YOUR style for ${contactName}: "${messageContent.slice(0,50)}..."`);
+
+    // Not self-chat, but owner messaging someone else - learn style
+    if (messageContent) {
+      const agentCmd = parseAgentCommand(messageContent);
+      if (agentCmd) {
+        await handleAgentCommand(agentCmd, jid);
+        return;
+      }
+      const cmd = parseOwnerCommand(messageContent);
+      if (cmd) { await handleOwnerCommand(cmd, jid); return; }
+      if (messageContent && !messageContent.startsWith('/')) {
+        await memory.addOwnerMessage(jid, messageContent);
+        await memory.addMessage(jid, 'assistant', messageContent);
+        console.log(`📝 Learned YOUR style for ${contactName}: "${messageContent.slice(0,50)}..."`);
+      }
     }
     return;
   }
 
-  if (isFromMe) return;
   if (!messageContent && !mediaInfo) return;
 
   console.log(`\n📩 From ${contactName} (${jid}): ${messageContent?.slice(0,100)} ${mediaInfo ? `[${mediaInfo.type}]` : ''}`);
 
-  // Check if this contact has active agent task
   const activeTask = await agentManager.getTask(jid);
   if (activeTask) {
     console.log(`🤖 Agent task active for ${jid}: ${activeTask.goal}`);
@@ -322,7 +391,8 @@ async function handleAgentCommand(agentCmd, ownerJid) {
   let failed = 0;
   
   try {
-    await sock.sendMessage(ownerJid, { text: `🤖 *Starting Agent*\n\nTargets: ${numbers.length} numbers\nGoal: ${goal}\n\nI will message them one by one and bring discussion to end. Reporting progress here...` });
+    const hint = agentCmd.isNatural ? '🧠 Natural language detected' : '🤖 Agent command';
+    await sock.sendMessage(ownerJid, { text: `${hint}\n\nTargets: ${numbers.length} numbers\nGoal: ${goal}\n\nI will message them one by one and bring discussion to end. Reporting progress here...` });
   } catch (e) { console.error('Failed to send starting msg to owner:', e.message); }
 
   for (const num of numbers) {
@@ -335,16 +405,13 @@ async function handleAgentCommand(agentCmd, ownerJid) {
       const styleTexts = ownerStyle.map(s => s.content);
       const history = await memory.getHistory(targetJid);
       
-      // Detect gender from owner style history (how owner addressed them)
       let genderHint = 'unknown';
       const styleCombined = styleTexts.join(' ').toLowerCase();
       if (styleCombined.includes(' ma ') || styleCombined.includes(' ma,') || styleCombined.match(/\bma\b.*\?/) || styleCombined.includes(' madam') || styleCombined.includes(' sis') || styleCombined.includes(' aunty')) {
         genderHint = 'female - address as ma';
-      } else if (styleCombined.includes(' sir') || styleCombined.includes(' bro') || styleCombined.includes(' boss') && !styleCombined.includes(' ma ')) {
-        // Check more specifically for Sir
-        if (styleCombined.includes(' sir')) genderHint = 'male - address as Sir';
+      } else if (styleCombined.includes(' sir')) {
+        genderHint = 'male - address as Sir';
       }
-      // Also check history for owner addressing
       const historyText = history.map(h => h.content).join(' ').toLowerCase();
       if (genderHint === 'unknown') {
         if (historyText.includes(' ma ') || historyText.includes(' madam')) genderHint = 'female - address as ma';
@@ -352,7 +419,6 @@ async function handleAgentCommand(agentCmd, ownerJid) {
       }
       console.log(`🎭 Gender hint for ${targetJid}: ${genderHint} (from ${styleTexts.length} samples)`);
       
-      // Generate initial message with goal - with fallback
       let initialMsg = '';
       try {
         let genderInstruction = '';
@@ -375,7 +441,6 @@ Write ONLY the first message as owner would, in their unique style with this per
         console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,120)}...`);
       } catch (e) {
         console.error(`❌ Failed to generate initial msg for ${targetJid}:`, e.message);
-        // Fallback message based on goal and gender
         if (genderHint.includes('female')) {
           initialMsg = `Hello ma, how you dey? Hope you dey fine? 🙏`;
         } else if (genderHint.includes('male')) {
@@ -385,7 +450,6 @@ Write ONLY the first message as owner would, in their unique style with this per
         } else {
           initialMsg = `Hello, how you dey? How body? Hope you dey fine? 🙏`;
         }
-        // Append casual continuation if goal mentions greet
         if (goal.toLowerCase().includes('greet') || goal.toLowerCase().includes('how they are')) {
           if (genderHint.includes('female') && !initialMsg.toLowerCase().includes(' ma')) initialMsg = initialMsg.replace('Hello', 'Hello ma,');
           if (genderHint.includes('male') && !initialMsg.toLowerCase().includes('sir')) initialMsg = initialMsg.replace('Hello', 'Hello Sir,');
@@ -393,7 +457,6 @@ Write ONLY the first message as owner would, in their unique style with this per
         console.log(`🤖 Using fallback initial msg: ${initialMsg}`);
       }
 
-      // Ensure message not empty and not network worry
       if (!initialMsg || initialMsg.includes('Network dey worry') || initialMsg.length < 3) {
         if (genderHint.includes('female')) initialMsg = `Hello ma, how you dey? ${goal.slice(0,60)} 🙏`;
         else if (genderHint.includes('male')) initialMsg = `Hello Sir, how you dey? ${goal.slice(0,60)} 🙏`;
@@ -438,7 +501,7 @@ Write ONLY the first message as owner would, in their unique style with this per
   }
   
   try {
-    await sock.sendMessage(ownerJid, { text: `🚀 *Agent Launched*\n\n✅ Started: ${started}\n❌ Failed: ${failed}\nNumbers: ${numbers.join(', ')}\n\nI will chat with them and report back when goal is achieved. Check /status\n\nTip: Use commas for multiple numbers: /agent 0901 434 7620, 0811 003 3639 | Goal: ...\nOr spaces: /sent 0901 434 7620 0811 003 3639 | greet them as ma/Sir` });
+    await sock.sendMessage(ownerJid, { text: `🚀 *Agent Launched*\n\n✅ Started: ${started}\n❌ Failed: ${failed}\nNumbers: ${numbers.join(', ')}\n\nI will chat with them and report back when goal is achieved. Check /status\n\n💡 Now you can just talk naturally without /agent - e.g.:\n"Greet 0901... 0811... as ma/Sir"\nOr share contacts and say "greet them all"` });
   } catch {}
 }
 
@@ -452,13 +515,11 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     
     console.log(`🤖 Agent step ${task.steps} for ${jid}: ${historyText.slice(0,80)}...`);
     
-    // Check if max steps reached
     if (task.steps >= task.maxSteps) {
       await agentManager.completeTask(jid, `Max steps (${task.maxSteps}) reached. Last message: ${historyText}`);
       return;
     }
     
-    // Generate reply with goal context
     const history = await memory.getHistory(jid);
     const ownerStyle = await memory.getOwnerStyle(jid);
     const styleTexts = ownerStyle.map(s => s.content);
@@ -471,12 +532,6 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     await delayRandom();
     
     let mediaForAI = null;
-    if (mediaInfo && (mediaInfo.type === 'image' || mediaInfo.type === 'sticker')) {
-      try {
-        const buffer = await downloadMediaMessage({ key: { remoteJid: jid }, message: { [mediaInfo.type + 'Message']: {} } }, 'buffer', {}, { logger: pino({ level: 'silent' }) }).catch(() => null);
-        // For agent replies, we already have message, need to download from original msg - skip for simplicity in agent flow
-      } catch {}
-    }
     
     const aiReply = await generateReply(jid, messageContent || historyText, fullHistory, styleTexts, mediaForAI);
     
@@ -488,7 +543,6 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     
     await agentManager.updateTask(jid, { history: task.history, steps: task.steps });
     
-    // Check if goal achieved
     const achieved = await agentManager.isGoalAchieved(task.goal, task.history);
     if (achieved) {
       await agentManager.completeTask(jid, `Goal achieved: ${task.goal}`);
@@ -529,7 +583,26 @@ async function extractContent(msg) {
     if (inner.extendedTextMessage?.text) return { text: inner.extendedTextMessage.text, mediaInfo: null };
   }
   if (m.locationMessage) return { text: `[Location: ${m.locationMessage.degreesLatitude}, ${m.locationMessage.degreesLongitude}]`, mediaInfo: { type: 'location' } };
-  if (m.contactMessage) return { text: `[Contact: ${m.contactMessage.displayName}]`, mediaInfo: null };
+  if (m.contactMessage) {
+    const vcard = m.contactMessage.vcard || '';
+    const numbers = extractNumbersFromVcard(vcard);
+    const displayName = m.contactMessage.displayName || 'Contact';
+    console.log(`📇 Contact share: ${displayName} -> ${numbers.join(', ')}`);
+    return { text: `[Contact: ${displayName}] ${numbers.join(', ')}`, mediaInfo: { type: 'contact', numbers, displayName, vcard } };
+  }
+  if (m.contactsArrayMessage) {
+    const contacts = m.contactsArrayMessage.contacts || [];
+    const allNumbers = [];
+    const names = [];
+    for (const c of contacts) {
+      const vcard = c.vcard || '';
+      const nums = extractNumbersFromVcard(vcard);
+      allNumbers.push(...nums);
+      names.push(c.displayName || 'Contact');
+    }
+    console.log(`📇 Multiple contacts share: ${names.join(', ')} -> ${allNumbers.join(', ')}`);
+    return { text: `[Contacts: ${names.join(', ')}] ${allNumbers.join(', ')}`, mediaInfo: { type: 'contact', numbers: [...new Set(allNumbers)], displayNames: names } };
+  }
   if (m.pollCreationMessage) return { text: `[Poll: ${m.pollCreationMessage.name}]`, mediaInfo: null };
   return { text: '', mediaInfo: null };
 }
@@ -565,11 +638,10 @@ async function handleOwnerCommand(cmd, currentJid) {
       break;
     }
     case 'send': {
-      if (!cmd.target || !cmd.message) { await sock.sendMessage(sendTo, { text: 'Usage: /send 2348012345678 Your message here\n\nExamples:\n/send 08051934689 Hello boss how far?\n/send 0901 434 7620, 0811 003 3639 Hello everyone\n/sent 0901 434 7620 0811 003 3639 | Goal: greet them (this also works as agent)' }); return; }
-      const { normalizeNumber, extractNumbersRobust } = await import('./agent.js');
-      // Support multiple numbers for /send broadcast
+      if (!cmd.target || !cmd.message) { await sock.sendMessage(sendTo, { text: 'Usage: /send 2348012345678 Your message here\n\nExamples:\n/send 08051934689 Hello boss how far?\n/send 0901 434 7620, 0811 003 3639 Hello everyone\n\n💡 Now you can also just say naturally:\n"Greet 0901 434 7620 0811 003 3639 as ma/Sir"' }); return; }
       let targets = extractNumbersRobust(cmd.target);
       if (targets.length === 0) {
+        const { normalizeNumber } = await import('./agent.js');
         const single = normalizeNumber(cmd.target);
         if (single) targets = [single];
       }
@@ -610,11 +682,12 @@ async function handleOwnerCommand(cmd, currentJid) {
       const mins = Math.floor((uptime % 3600) / 60);
       const styleCount = await memory.getAllOwnerStylesCount();
       const agentTasks = await agentManager.listActiveTasks();
-      await sock.sendMessage(sendTo, { text: `📊 *Bot Status - AGENT MODE*\n\n• Status: ${global.botStatus}\n• Uptime: ${hours}h ${mins}m\n• Model: ${config.geminiModel}\n• Learned: ${styleCount} contacts\n• Active agent tasks: ${agentTasks.length}\n• Media: Images, Stickers, Voice, Video ✅\n• AI Chain: ${[config.geminiApiKey?'Gemini':null, config.groqApiKey?'Groq':null, config.openrouterApiKey?'OpenRouter':null, config.cerebrasApiKey?'Cerebras':null, config.githubToken?'GitHub':null].filter(Boolean).join(' → ')}\n• Connected: ${sock?.user ? 'Yes' : 'No'}\n\n🤖 Agent: Message yourself /agent number | Goal: ...\n📚 Import: /import` });
+      const recent = await agentManager.getRecentSharedContacts(`${config.phoneNumber}@s.whatsapp.net`);
+      await sock.sendMessage(sendTo, { text: `📊 *Bot Status - SUPER AGENT MODE*\n\n• Status: ${global.botStatus}\n• Uptime: ${hours}h ${mins}m\n• Model: ${config.geminiModel}\n• Learned: ${styleCount} contacts\n• Active agent tasks: ${agentTasks.length}\n• Recent shared contacts: ${recent.length > 0 ? recent.join(', ') : 'none'}\n• Media: Images, Stickers, Voice, Video, Contacts ✅\n• AI Chain: ${[config.geminiApiKey?'Gemini':null, config.groqApiKey?'Groq':null, config.openrouterApiKey?'OpenRouter':null, config.cerebrasApiKey?'Cerebras':null, config.githubToken?'GitHub':null].filter(Boolean).join(' → ')}\n• Connected: ${sock?.user ? 'Yes' : 'No'}\n\n🧠 Natural language: ON - Just talk to yourself!\nExamples:\n"Greet 0901... 0811... as ma/Sir"\nShare contacts + "greet them all"\n"Do same to all contacts I shared"\n\nOld: /agent 234... | Goal: ...\n📚 Import: /import` });
       break;
     }
     case 'help': {
-      await sock.sendMessage(sendTo, { text: getOwnerHelpText() + '\n\n🤖 AGENT MODE:\n/agent 234... | Goal: your goal\n/agent 234...,234... | Goal: broadcast\n\nBot will go message them and bring discussion to end, report back to you!' });
+      await sock.sendMessage(sendTo, { text: getOwnerHelpText() + '\n\n🧠 SUPER AGENT - No slash needed!\nJust say in self-chat:\n"Greet 0901 434 7620, 0811... ask how they are, ma for female Sir for male"\nOr share contacts and say "greet them all"\n\nBot understands:\n• Numbers with spaces: 0901 434 7620\n• Contact cards (WhatsApp share)\n• "them", "all", "same thing" = recent contacts\n• Gender from your history (ma/Sir)\n\nOld still works:\n/agent 234... | Goal: your goal\n/send 234... message' });
       break;
     }
   }
