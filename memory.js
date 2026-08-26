@@ -223,6 +223,62 @@ class MemoryStore {
       } catch {}
     }
   }
+
+  // ---------- OWNER TAKEOVER DETECTION ----------
+  // When YOU (real owner) reply manually, bot should pause to avoid double-reply / interfering
+  async setOwnerActive(jid) {
+    const key = this._key(jid, 'owner:active');
+    const now = Date.now();
+    try {
+      if (this.isRedis) {
+        await this.redis.set(key, now.toString(), { ex: 60 * 60 * 24 }); // 24h expiry
+      } else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_owner_active.json`);
+        fs.writeFileSync(file, JSON.stringify({ timestamp: now }));
+      }
+      console.log(`👑 Owner active set for ${jid} at ${new Date(now).toISOString()}`);
+      return now;
+    } catch (e) {
+      console.warn('setOwnerActive error:', e.message);
+      return now;
+    }
+  }
+
+  async getOwnerLastActive(jid) {
+    const key = this._key(jid, 'owner:active');
+    try {
+      if (this.isRedis) {
+        const val = await this.redis.get(key);
+        if (!val) return null;
+        return typeof val === 'string' ? parseInt(val, 10) : val;
+      } else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_owner_active.json`);
+        if (!fs.existsSync(file)) return null;
+        const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        return data.timestamp || null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  async isOwnerRecentlyActive(jid, minutes = 10) {
+    const last = await this.getOwnerLastActive(jid);
+    if (!last) return false;
+    const diffMins = (Date.now() - last) / 60000;
+    return diffMins < minutes;
+  }
+
+  async clearOwnerActive(jid) {
+    const key = this._key(jid, 'owner:active');
+    try {
+      if (this.isRedis) await this.redis.del(key);
+      else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_owner_active.json`);
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      }
+    } catch {}
+  }
 }
 
 let memoryInstance = null;

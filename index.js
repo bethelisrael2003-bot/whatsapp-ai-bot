@@ -180,6 +180,9 @@ let isStarting = false;
 let reconnectTimeout = null;
 let instanceId = Math.random().toString(36).slice(2, 8);
 global.instanceId = instanceId;
+// Prevent double-reply when owner is typing / recently replied
+const processingJids = new Set();
+const recentlyProcessed = new Map(); // jid -> timestamp to debounce duplicate decrypts
 
 async function startBot() {
   if (isStarting) {
@@ -430,7 +433,25 @@ async function handleMessage(msg) {
       return;
     }
 
-    // Not self-chat, but owner messaging someone else - learn style
+    // Not self-chat, but owner messaging someone else - learn style + TAKE OVER
+    // CRITICAL: When YOU (real owner) reply, bot must STOP and not interfere with already-handled chat
+    try {
+      await memory.setOwnerActive(jid);
+      const pauseMins = config.ownerTakeoverPauseMinutes || 15;
+      await memory.setHandoff(jid, pauseMins);
+      console.log(`👑 Owner took over ${contactName} (${jid}) - pausing bot for ${pauseMins}m to avoid double reply`);
+      // If there was an active agent task, pause it too - owner is handling manually
+      if (agentManager) {
+        try {
+          const existingTask = await agentManager.getTask(jid);
+          if (existingTask) {
+            console.log(`🤖 Pausing agent task for ${jid} because owner took over`);
+            await agentManager.completeTask(jid, 'Paused - owner took over manually');
+          }
+        } catch {}
+      }
+    } catch (e) { console.error('Owner takeover error:', e.message); }
+
     if (messageContent) {
       const agentCmd = parseAgentCommand(messageContent);
       if (agentCmd) {
@@ -449,6 +470,49 @@ async function handleMessage(msg) {
   }
 
   if (!messageContent && !mediaInfo) return;
+
+  // ===== OWNER TAKEOVER CHECK - Don't reply if owner recently active =====
+  try {
+    const ownerLastActive = await memory.getOwnerLastActive(jid);
+    if (ownerLastActive) {
+      const minsSince = (Date.now() - ownerLastActive) / 60000;
+      const pauseMins = config.ownerTakeoverPauseMinutes || 15;
+      if (minsSince < pauseMins) {
+        console.log(`⏸️ Skipping ${contactName} (${jid}) - YOU replied ${minsSince.toFixed(1)}m ago, bot paused for ${pauseMins}m. Msg: "${(messageContent||'').slice(0,60)}"`);
+        const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
+        if (historyText) await memory.addMessage(jid, 'user', historyText);
+        return;
+      }
+      if (msg.messageTimestamp) {
+        const msgTime = Number(msg.messageTimestamp) * 1000;
+        if (msgTime < ownerLastActive - 5000) {
+          console.log(`⏸️ Skipping OLD message from ${contactName} - msg at ${new Date(msgTime).toLocaleTimeString()} older than your reply at ${new Date(ownerLastActive).toLocaleTimeString()}. Already handled.`);
+          return;
+        }
+      }
+    }
+  } catch (e) { console.error('Owner active check error:', e.message); }
+
+  // Debounce duplicate decrypts (Baileys sometimes fires same message twice)
+  const msgId = msg.key.id;
+  if (msgId) {
+    const lastProcessed = recentlyProcessed.get(msgId);
+    if (lastProcessed && Date.now() - lastProcessed < 30000) {
+      console.log(`⏭️ Duplicate ${msgId} from ${jid} - processed ${((Date.now()-lastProcessed)/1000).toFixed(1)}s ago, skipping`);
+      return;
+    }
+    recentlyProcessed.set(msgId, Date.now());
+    if (recentlyProcessed.size > 200) {
+      const cutoff = Date.now() - 60000;
+      for (const [k,v] of recentlyProcessed.entries()) if (v < cutoff) recentlyProcessed.delete(k);
+    }
+  }
+
+  // Prevent concurrent processing of same chat
+  if (processingJids.has(jid)) {
+    console.log(`⏳ Already processing ${jid}, skipping to avoid double reply`);
+    return;
+  }
 
   console.log(`\n📩 From ${contactName} (${jid}): ${messageContent?.slice(0,100)} ${mediaInfo ? `[${mediaInfo.type}]` : ''}`);
 
@@ -499,6 +563,8 @@ async function handleMessage(msg) {
     return;
   }
 
+  // Mark as processing to prevent double replies
+  processingJids.add(jid);
   try {
     const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type} ${mediaInfo.caption ? ': ' + mediaInfo.caption : ''}]` : '');
     await memory.addMessage(jid, 'user', historyText);
@@ -560,6 +626,15 @@ async function handleMessage(msg) {
     const finalMessageForAI = transcribedText || messageContent || historyText;
     const aiReply = await generateReply(jid, finalMessageForAI, history.slice(0, -1), ownerStyleTexts, mediaForAI);
 
+    // FINAL CHECK: Did owner reply while AI was generating? If yes, abort to avoid double reply
+    try {
+      if (await memory.isOwnerRecentlyActive(jid, 2)) {
+        console.log(`⏸️ Aborting reply to ${contactName} - YOU became active during AI generation, skipping to avoid double reply`);
+        await sock.sendPresenceUpdate('paused', jid);
+        return;
+      }
+    } catch {}
+
     await sock.sendMessage(jid, { text: aiReply });
     console.log(`🤖 Replied as YOU to ${contactName}: ${aiReply.slice(0,100)}...`);
     await memory.addMessage(jid, 'assistant', aiReply);
@@ -568,6 +643,8 @@ async function handleMessage(msg) {
   } catch (err) {
     console.error(`Error replying to ${jid}:`, err);
     try { await sock.sendMessage(jid, { text: "Omo network dey worry, I go reply you now 🙏" }); } catch {}
+  } finally {
+    processingJids.delete(jid);
   }
 }
 
