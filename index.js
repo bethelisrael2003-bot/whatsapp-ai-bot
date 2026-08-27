@@ -756,10 +756,12 @@ async function handleMessage(msg) {
       // Set handoff to pause bot for this contact
       try {
         await memory.setHandoff(jid, config.handoffMinutes || 120);
+        await memory.clearLastDisclosure(jid); // Next reply after handoff should disclose again
       } catch {}
       
-      // Send handoff message to contact (transparent assistant)
-      await sock.sendMessage(jid, { text: handoffMsg });
+      // Send handoff message to contact (transparent assistant) - ensure no __HANDOFF__ leak
+      const cleanHandoffMsg = handoffMsg.replace('__HANDOFF__', '').trim();
+      await sock.sendMessage(jid, { text: cleanHandoffMsg });
       console.log(`📤 Handoff message sent to ${contactName}: ${handoffMsg.slice(0,100)}...`);
       await memory.addMessage(jid, 'assistant', handoffMsg);
       
@@ -823,15 +825,26 @@ async function handleAgentCommand(agentCmd, ownerJid) {
       
       let genderHint = 'unknown';
       const styleCombined = styleTexts.join(' ').toLowerCase();
-      if (styleCombined.includes(' ma ') || styleCombined.includes(' ma,') || styleCombined.match(/\bma\b.*\?/) || styleCombined.includes(' madam') || styleCombined.includes(' sis') || styleCombined.includes(' aunty')) {
-        genderHint = 'female - address as ma';
+      // Check for ma'am, ma, madam, etc.
+      if (styleCombined.includes("ma'am") || styleCombined.includes('maam') || styleCombined.includes(' ma ') || styleCombined.includes(' ma,') || styleCombined.match(/\bma\b.*\?/) || styleCombined.includes(' madam') || styleCombined.includes(' sis') || styleCombined.includes(' aunty')) {
+        // Check if goal explicitly says ma'am
+        if (goal.toLowerCase().includes("ma'am") || goal.toLowerCase().includes('maam')) {
+          genderHint = "female - address as ma'am";
+        } else {
+          genderHint = 'female - address as ma';
+        }
       } else if (styleCombined.includes(' sir')) {
         genderHint = 'male - address as Sir';
       }
       const historyText = history.map(h => h.content).join(' ').toLowerCase();
       if (genderHint === 'unknown') {
-        if (historyText.includes(' ma ') || historyText.includes(' madam')) genderHint = 'female - address as ma';
+        if (historyText.includes("ma'am") || historyText.includes('maam')) genderHint = "female - address as ma'am";
+        else if (historyText.includes(' ma ') || historyText.includes(' madam')) genderHint = 'female - address as ma';
         else if (historyText.includes(' sir ')) genderHint = 'male - address as Sir';
+      }
+      // Override if goal says ma'am
+      if (goal.toLowerCase().includes("ma'am") || goal.toLowerCase().includes('maam')) {
+        genderHint = "female - address as ma'am";
       }
       console.log(`🎭 Gender hint for ${targetJid}: ${genderHint} (from ${styleTexts.length} samples)`);
       
@@ -877,8 +890,22 @@ Goal says: ${genderInstruction} - but filter: if goal asks for financial/romanti
           if (history.length <= 1) agentShouldDisclose = true; // New contact
         } catch {}
         
-        initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null, { shouldDisclose: agentShouldDisclose });
+        initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null, { shouldDisclose: agentShouldDisclose, skipPreChecks: true, isAgentTask: true });
         console.log(`🤖 Generated initial msg for ${targetJid} (disclose=${agentShouldDisclose}): ${initialMsg.slice(0,120)}...`);
+        
+        // CRITICAL FIX: Never leak __HANDOFF__ flag to contact - strip it
+        if (initialMsg.startsWith('__HANDOFF__')) {
+          console.log(`⚠️ Agent initial msg was handoff for ${targetJid} - goal might be too vague or serious, using safe fallback instead of handoff`);
+          const stripped = initialMsg.replace('__HANDOFF__', '').split('__REASON__')[0].trim();
+          // For proactive agent messages, don't send handoff message (confusing) - use safe casual greeting instead
+          const timeCtxFallback = getNigerianTimeContext();
+          if (goal.toLowerCase().includes('maam') || goal.toLowerCase().includes("ma'am") || goal.toLowerCase().includes(' ma ') || goal.toLowerCase().includes('respect')) {
+            initialMsg = `${timeCtxFallback.greeting} ma'am, how are you doing today? Hope you dey fine 🙂 Just checking in on your side.`;
+          } else {
+            initialMsg = `${timeCtxFallback.greeting}, how you dey? Hope you dey fine 🙂 Just checking in.`;
+          }
+          console.log(`🤖 Using safe fallback for agent: ${initialMsg}`);
+        }
         
         if (agentShouldDisclose) {
           try { await memory.setLastDisclosure(targetJid); } catch {}

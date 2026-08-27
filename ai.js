@@ -355,24 +355,33 @@ export async function generateReply(jid, userMessage, history = [], ownerStyleSa
   const lowerMsg = (userMessage || '').toLowerCase();
   
   // ===== MANDATORY CHECKS BEFORE AI =====
+  const skipPreChecks = options.skipPreChecks || options.isAgentTask || false;
+  const isInternalAgentPrompt = userMessage && (userMessage.includes('Goal for this contact:') || userMessage.includes('STRICT RULES:') || userMessage.includes('You are Bethel\'s transparent WhatsApp assistant handling ONLY casual'));
   
-  // 1. Identity question -> must disclose truthfully
-  if (isIdentityQuestion(userMessage)) {
+  // 1. Identity question -> must disclose truthfully (skip for internal prompts)
+  if (!isInternalAgentPrompt && !skipPreChecks && isIdentityQuestion(userMessage)) {
     console.log(`🔍 IDENTITY QUESTION from ${jid}: "${userMessage.slice(0,80)}" - DISCLOSING`);
     return getDisclosureResponse();
   }
   
-  // 2. Serious/personal/emotional/important -> auto handoff, don't reply as bot
-  if (isSeriousTopic(userMessage, history)) {
+  // 2. Serious/personal/emotional/important -> auto handoff, don't reply as bot (skip for internal agent prompts)
+  if (!isInternalAgentPrompt && !skipPreChecks && isSeriousTopic(userMessage, history)) {
     console.log(`⚠️ SERIOUS TOPIC from ${jid}: "${userMessage.slice(0,80)}" - HANDOFF REQUIRED`);
-    // Return special flag so index.js can handle handoff notification
     return `__HANDOFF__${getHandoffResponse()}`;
   }
   
-  // 3. Financial request from user -> handoff (don't handle money)
-  if (containsFinancialLanguage(userMessage)) {
-    console.log(`💰 Financial request from ${jid}: "${userMessage.slice(0,80)}" - HANDOFF, no financial handling`);
-    return `__HANDOFF__${getHandoffResponse()} __REASON__: Financial topic`;
+  // 3. Financial request from user -> handoff (don't handle money) - strict for real user messages, not internal prompts
+  if (!isInternalAgentPrompt && !skipPreChecks) {
+    // Only check if user is actually REQUESTING financial action, not just mentioning keywords in instructions
+    // Use more specific check for user financial requests
+    const lower = (userMessage || '').toLowerCase();
+    const isFinancialRequest = /\b(send|transfer|drop).{0,15}(money|account|aza|cash|fund)/i.test(lower) || 
+                               /\b(account number|bank account|opay|my account|your account).{0,10}(please|send|drop|what|give)/i.test(lower) ||
+                               /\b(what is|send me|give me).{0,10}(account|opay|bank)/i.test(lower);
+    if (isFinancialRequest || (containsFinancialLanguage(userMessage) && lower.length < 100 && (lower.includes('?') || lower.includes('please') || lower.includes('send') || lower.includes('give')))) {
+      console.log(`💰 Financial request from ${jid}: "${userMessage.slice(0,80)}" - HANDOFF, no financial handling`);
+      return `__HANDOFF__${getHandoffResponse()} __REASON__: Financial topic`;
+    }
   }
 
   const isNewContact = !ownerStyleSamples || ownerStyleSamples.length === 0;
