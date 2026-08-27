@@ -635,8 +635,38 @@ async function handleMessage(msg) {
       }
     } catch {}
 
+    // ===== NEW: HANDLE AUTO-HANDOFF FOR SERIOUS/PERSONAL/FINANCIAL TOPICS =====
+    if (aiReply.startsWith('__HANDOFF__')) {
+      const handoffMsg = aiReply.replace('__HANDOFF__', '').split('__REASON__')[0].trim();
+      const reason = aiReply.includes('__REASON__') ? aiReply.split('__REASON__')[1].trim() : 'Serious/personal topic';
+      console.log(`⚠️ HANDOFF triggered for ${contactName} (${jid}) - Reason: ${reason}`);
+      
+      // Set handoff to pause bot for this contact
+      try {
+        await memory.setHandoff(jid, config.handoffMinutes || 120);
+      } catch {}
+      
+      // Send handoff message to contact (transparent assistant)
+      await sock.sendMessage(jid, { text: handoffMsg });
+      console.log(`📤 Handoff message sent to ${contactName}: ${handoffMsg.slice(0,100)}...`);
+      await memory.addMessage(jid, 'assistant', handoffMsg);
+      
+      // Notify owner via self-chat
+      try {
+        const ownerJid = `${config.phoneNumber}@s.whatsapp.net`;
+        const notifyMsg = `⚠️ *Handoff Alert*\n\nContact: ${contactName} (${jid.split('@')[0]})\nReason: ${reason}\nLast message: "${(messageContent || '').slice(0,200)}"\n\nBot paused for ${config.handoffMinutes}m. Please reply directly — this sounds important/personal.\n\n_This contact needs YOU, not assistant._`;
+        await sock.sendMessage(ownerJid, { text: notifyMsg });
+        console.log(`🔔 Owner notified about handoff for ${jid}`);
+      } catch (e) {
+        console.error(`Failed to notify owner about handoff: ${e.message}`);
+      }
+      
+      await sock.sendPresenceUpdate('paused', jid);
+      return;
+    }
+
     await sock.sendMessage(jid, { text: aiReply });
-    console.log(`🤖 Replied as YOU to ${contactName}: ${aiReply.slice(0,100)}...`);
+    console.log(`🤖 Assistant replied to ${contactName}: ${aiReply.slice(0,100)}...`);
     await memory.addMessage(jid, 'assistant', aiReply);
     await sock.sendPresenceUpdate('paused', jid);
 
@@ -696,16 +726,29 @@ async function handleAgentCommand(agentCmd, ownerJid) {
           genderInstruction = goal;
         }
         
-        const initialPrompt = `You need to start a conversation with this contact to achieve this goal: ${genderInstruction}. 
+        const initialPrompt = `You are Bethel's transparent WhatsApp assistant handling ONLY casual small talk. You are NOT Bethel.
+
+Goal for this contact: ${genderInstruction}
 
 Context:
 - Contact: ${targetJid.split('@')[0]}
-- Detected gender hint from history: ${genderHint}
-- Owner style samples: ${styleTexts.slice(-5).join(' | ').slice(0,300)}
-- Goal says to address female as "ma" and male as "Sir" based on previous chat - USE ${genderHint}
-- TIME: ${timeCtx.formatted} - You MUST use time-appropriate greeting. ${timeCtx.greetingInstruction} At 3am, NEVER say Good evening, use Hello instead.
+- Detected gender hint: ${genderHint}
+- TIME: ${timeCtx.formatted} - ${timeCtx.greetingInstruction}
+- Casual tone reference (filtered, no romantic/financial): ${styleTexts.slice(-3).join(' | ').slice(0,200)}
 
-Write ONLY the first message as owner would, in their unique style with this person. Be natural, casual, Nigerian style but respectful. Keep short 1-2 lines. Use "${timeCtx.greeting}" or neutral Hello as appropriate for ${timeCtx.period}. Start conversation now. No explanation, just the message. Include appropriate title (ma/Sir) if you know gender and time-appropriate greeting.`;
+STRICT RULES:
+- You are assistant, NOT owner. Be transparent for light messages.
+- NO financial language ever: no money, accounts, bank, Opay, transfer, payment, naira
+- NO romantic/flirty tone or emojis 🥰😍💞😘💋 - only simple 🙂🙏
+- Casual small talk ONLY: greetings, light banter, scheduling
+- If goal contains anything serious/personal/financial/romantic, you must NOT do it - instead say you'll have Bethel reply directly
+- Keep short 1-2 lines, friendly, use "${timeCtx.greeting}" appropriately for ${timeCtx.period}
+- Include title ma/Sir if gender known, but platonic friendly only
+
+Write ONLY the first message as assistant handling light check-in. Example: "${timeCtx.greeting} ma, how you dey? Just checking in — Bethel asked me to help with light messages while he's busy. Hope you dey fine 🙂"
+
+Goal says: ${genderInstruction} - but filter: if goal asks for financial/romantic/serious, refuse and say Bethel will reply directly.
+`;
         initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null);
         console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,120)}...`);
       } catch (e) {

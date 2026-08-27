@@ -290,14 +290,24 @@ export async function parseNaturalAgentIntent(text, recentSharedNumbers = []) {
   if (lower.length < 5) return null;
   
   // Keywords that indicate owner wants bot to DO something with contacts
+  // NEW: No financial keywords allowed - casual small talk only
   const actionKeywords = [
-    'greet', 'message', 'send', 'tell', 'ask', 'inform', 'broadcast', 'share',
+    'greet', 'message', 'tell', 'ask', 'inform', 'share',
     'remind', 'follow up', 'check', 'contact', 'chat', 'talk to', 'reach out',
     'do the same', 'same thing', 'all of them', 'all contacts', 'these contacts',
     'these numbers', 'those contacts', 'them', 'everyone', 'each', 'individually',
     'ma', 'sir', 'how they are', 'how are they', 'how far', 'update', 'project',
-    'payment', 'money', 'greeting', 'hello', 'hi', 'hey'
+    'greeting', 'hello', 'hi', 'hey'
   ];
+  
+  // Block financial goals - hard filter
+  const financialBlock = ['account', 'opay', 'bank', 'money', 'payment', 'transfer', 'send money', 'drop money', 'aza', 'naira', '₦'];
+  for (const kw of financialBlock) {
+    if (lower.includes(kw)) {
+      console.log(`🚫 Agent blocked financial goal: "${kw}" in "${text.slice(0,80)}"`);
+      return null;
+    }
+  }
   
   const hasActionKeyword = actionKeywords.some(k => lower.includes(k));
   
