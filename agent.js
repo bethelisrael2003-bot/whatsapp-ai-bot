@@ -290,9 +290,9 @@ export async function parseNaturalAgentIntent(text, recentSharedNumbers = []) {
   if (lower.length < 5) return null;
   
   // Keywords that indicate owner wants bot to DO something with contacts
-  // NEW: No financial keywords allowed - casual small talk only
+  // NEW: Casual small talk only - 'send' allowed for greetings, but financial sends blocked below
   const actionKeywords = [
-    'greet', 'message', 'tell', 'ask', 'inform', 'share',
+    'greet', 'message', 'send', 'tell', 'ask', 'inform', 'share',
     'remind', 'follow up', 'check', 'contact', 'chat', 'talk to', 'reach out',
     'do the same', 'same thing', 'all of them', 'all contacts', 'these contacts',
     'these numbers', 'those contacts', 'them', 'everyone', 'each', 'individually',
@@ -300,8 +300,8 @@ export async function parseNaturalAgentIntent(text, recentSharedNumbers = []) {
     'greeting', 'hello', 'hi', 'hey'
   ];
   
-  // Block financial goals - hard filter
-  const financialBlock = ['account', 'opay', 'bank', 'money', 'payment', 'transfer', 'send money', 'drop money', 'aza', 'naira', '₦'];
+  // Block financial goals - hard filter (but allow casual "send greeting")
+  const financialBlock = ['account', 'opay', 'bank', 'money', 'payment', 'transfer', 'drop money', 'aza', 'naira', '₦', 'send money', 'send account', 'drop account', 'send aza', 'drop aza'];
   for (const kw of financialBlock) {
     if (lower.includes(kw)) {
       console.log(`🚫 Agent blocked financial goal: "${kw}" in "${text.slice(0,80)}"`);
