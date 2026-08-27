@@ -625,8 +625,11 @@ async function handleMessage(msg) {
     const ownerStyleTexts = ownerStyle.map(s => s.content);
     console.log(`🎭 Style samples for ${contactName}: ${ownerStyleTexts.length}, Media: ${mediaInfo?.type || 'none'}`);
 
-    await sock.sendPresenceUpdate('composing', jid);
-    await delayRandom();
+    // ===== HUMAN-LIKE TIMING: Seen delay (no typing yet) =====
+    // Real person glances at phone after random gap, not instantly
+    const isMediaMessage = !!(mediaInfo && ['image', 'video', 'voice', 'audio', 'sticker'].includes(mediaInfo.type));
+    const seenDelay = getSeenDelay(isMediaMessage);
+    await delay(seenDelay);
 
     let mediaForAI = null;
     let transcribedText = null;
@@ -732,6 +735,17 @@ async function handleMessage(msg) {
         return;
       }
     } catch {}
+
+    // ===== HUMAN-LIKE TYPING: Duration matches message length =====
+    // Only show typing indicator AFTER we have reply, and for duration matching length
+    // This feels like real person typing, not bot instantly responding
+    const thinkingGap = getThinkingGap();
+    await delay(thinkingGap);
+    
+    // Start typing indicator
+    await sock.sendPresenceUpdate('composing', jid);
+    const typingDuration = getTypingDuration(aiReply.startsWith('__HANDOFF__') ? aiReply.replace('__HANDOFF__', '').split('__REASON__')[0].trim() : aiReply);
+    await delay(typingDuration);
 
     // ===== NEW: HANDLE AUTO-HANDOFF FOR SERIOUS/PERSONAL/FINANCIAL TOPICS =====
     if (aiReply.startsWith('__HANDOFF__')) {
@@ -896,7 +910,13 @@ Goal says: ${genderInstruction} - but filter: if goal asks for financial/romanti
         else initialMsg = `${fbGreet}, how you dey? ${goal.slice(0,60)} 🙏`;
       }
       
-      await delayRandom();
+      // Human-like timing for proactive agent message
+      await delay(getSeenDelay());
+      await delay(getThinkingGap());
+      await sock.sendPresenceUpdate('composing', targetJid);
+      await delay(getTypingDuration(initialMsg));
+      await sock.sendPresenceUpdate('paused', targetJid);
+      
       console.log(`📤 Sending agent message to ${targetJid}: ${initialMsg.slice(0,100)}...`);
       try {
         await sock.sendMessage(targetJid, { text: initialMsg });
@@ -924,7 +944,12 @@ Goal says: ${genderInstruction} - but filter: if goal asks for financial/romanti
         }
       }
       
-      if (numbers.length > 1) await delay(5000 + Math.random() * 5000);
+      if (numbers.length > 1) {
+        // Human-like gap between messaging different people - not mechanical
+        const betweenDelay = getRandomInt(8000, 25000);
+        console.log(`⏳ Human-like gap before next contact: ${betweenDelay}ms`);
+        await delay(betweenDelay);
+      }
       
     } catch (e) {
       console.error(`Agent failed for ${num}:`, e.message, e.stack?.slice(0,300));
@@ -987,8 +1012,9 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     
     const fullHistory = [...history.slice(0, -1), { role: 'system', content: goalPrompt }];
     
-    await sock.sendPresenceUpdate('composing', jid);
-    await delayRandom();
+    // Human-like timing for agent too - seen delay before processing
+    const agentSeenDelay = getSeenDelay();
+    await delay(agentSeenDelay);
     
     let mediaForAI = null;
     if (transcription) {
@@ -1007,6 +1033,11 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
     } catch {}
     
     const aiReply = await generateReply(jid, actualContent || historyText, fullHistory, styleTexts, mediaForAI, { shouldDisclose: agentReplyShouldDisclose });
+    
+    // Human-like typing for agent - duration matches length
+    await delay(getThinkingGap());
+    await sock.sendPresenceUpdate('composing', jid);
+    await delay(getTypingDuration(aiReply.startsWith('__HANDOFF__') ? aiReply.replace('__HANDOFF__', '').split('__REASON__')[0].trim() : aiReply));
     
     // Handle handoff in agent flow too
     if (aiReply.startsWith('__HANDOFF__')) {
@@ -1205,6 +1236,110 @@ function delayRandom() {
   const max = config.replyDelayMax;
   return delay(Math.floor(Math.random() * (max - min + 1)) + min);
 }
+
+// ===== HUMAN-LIKE TIMING - REALISTIC VARIATION =====
+function getRandomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function getRandomFloat(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+// Realistic "seen but not yet responding" gap - like person glancing at phone before replying
+// Weighted: 60% quick (2-6s), 25% medium (7-15s), 10% slow (16-35s), 5% very slow (40-90s) for natural variation
+function getSeenDelay(isMedia = false) {
+  const rand = Math.random();
+  let baseMin, baseMax;
+  
+  if (rand < 0.6) {
+    // 60% - Quick glance, actively on phone
+    baseMin = 2000;
+    baseMax = 6000;
+  } else if (rand < 0.85) {
+    // 25% - Medium, a bit busy / not instantly looking
+    baseMin = 7000;
+    baseMax = 15000;
+  } else if (rand < 0.95) {
+    // 10% - Slow, doing something else
+    baseMin = 16000;
+    baseMax = 35000;
+  } else {
+    // 5% - Very slow, away from phone, realistic human pattern
+    baseMin = 40000;
+    baseMax = 90000;
+  }
+  
+  // If media (image/voice/video), add extra time to "view" it
+  if (isMedia) {
+    baseMin += 2000;
+    baseMax += 8000;
+  }
+  
+  const delay = getRandomInt(baseMin, baseMax);
+  console.log(`⏳ Human-like seen delay: ${delay}ms (${(delay/1000).toFixed(1)}s) - ${rand < 0.6 ? 'quick' : rand < 0.85 ? 'medium' : rand < 0.95 ? 'slow' : 'very slow'}`);
+  return delay;
+}
+
+// Typing duration roughly matching message length - like real person typing on phone
+// Short replies = quick, long replies = longer typing, with natural variation
+function getTypingDuration(text) {
+  if (!text) return getRandomInt(1000, 2500);
+  
+  const len = text.length;
+  let min, max;
+  
+  if (len < 10) {
+    // Very short: "ok", "lol", "yes" - quick tap
+    min = 800;
+    max = 1800;
+  } else if (len < 30) {
+    // Short: 1-5 words
+    min = 1500;
+    max = 3500;
+  } else if (len < 60) {
+    // Medium-short: 1 line
+    min = 2500;
+    max = 5500;
+  } else if (len < 120) {
+    // Medium: 1-2 lines
+    min = 4000;
+    max = 8000;
+  } else if (len < 200) {
+    // Long: 2-3 lines
+    min = 6000;
+    max = 12000;
+  } else if (len < 350) {
+    // Very long: paragraph
+    min = 9000;
+    max = 16000;
+  } else {
+    // Extra long: capped
+    min = 12000;
+    max = 20000;
+  }
+  
+  // Add natural variation: ±20%
+  const variation = getRandomFloat(0.8, 1.25);
+  let duration = Math.floor(getRandomInt(min, max) * variation);
+  
+  // Occasionally add extra thinking pause (15% chance) - like person pausing mid-thought
+  if (Math.random() < 0.15) {
+    const extraPause = getRandomInt(1000, 4000);
+    duration += extraPause;
+    console.log(`💭 Extra thinking pause +${extraPause}ms`);
+  }
+  
+  console.log(`⌨️ Typing duration for ${len} chars: ${duration}ms (${(duration/1000).toFixed(1)}s)`);
+  return duration;
+}
+
+// Small thinking gap before typing starts (after seen delay, before typing indicator)
+function getThinkingGap() {
+  // 0.5-2.5s gap like person thinking what to say
+  return getRandomInt(500, 2500);
+}
+
 
 async function transcribeAudio(buffer, mimeType = 'audio/ogg') {
   // Try Groq Whisper first (free, fast, no card)
