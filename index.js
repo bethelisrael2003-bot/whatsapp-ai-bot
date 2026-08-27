@@ -424,7 +424,29 @@ async function handleMessage(msg) {
         } catch (e) { console.error('Natural intent error:', e.message); }
       }
 
-      // 4. If self-chat and no command, learn style but also keep as note
+      // 4. Check for away/back toggle - manual control for #2
+      if (messageContent) {
+        const lowerSelf = messageContent.toLowerCase().trim();
+        if (['away', 'i am away', "i'm away", 'brb', 'busy', 'go away', 'enable bot', 'bot on', 'assistant on'].includes(lowerSelf) || lowerSelf.startsWith('away ') || lowerSelf === 'away mode on') {
+          try {
+            await memory.setGlobalAwayMode(true);
+            await sock.sendMessage(jid, { text: `🌙 Away mode ON — assistant will handle casual messages while you're away.\n\nIt will:\n• Disclose it's assistant on first reply to each contact\n• Handle only light small talk\n• Auto-handoff serious/personal/financial topics to you\n• Stay quiet for 10m after you reply in a chat\n\nText "back" when you're back to make it quiet again.` });
+            console.log(`🌙 Owner set AWAY mode via self-chat: ${messageContent}`);
+          } catch {}
+          return;
+        }
+        if (['back', 'i am back', "i'm back", 'i am online', 'online', 'i am here', 'back online', 'disable bot', 'bot off', 'assistant off', 'pause all', 'quiet'].includes(lowerSelf) || lowerSelf.startsWith('back ') || lowerSelf === 'away mode off') {
+          try {
+            await memory.setGlobalAwayMode(false);
+            await memory.setGlobalOwnerActive();
+            await sock.sendMessage(jid, { text: `✅ Back mode — assistant now QUIET.\n\nIt will NOT auto-reply while you're actively on WhatsApp. It will only reply if you haven't sent a message in a chat within last ${config.ownerTakeoverPauseMinutes || 10}m.\n\nText "away" when you want it active again.` });
+            console.log(`✅ Owner set BACK mode via self-chat: ${messageContent}`);
+          } catch {}
+          return;
+        }
+      }
+
+      // 5. If self-chat and no command, learn style but also keep as note
       if (messageContent && !messageContent.startsWith('/')) {
         await memory.addOwnerMessage(jid, messageContent);
         await memory.addMessage(jid, 'assistant', messageContent);
@@ -437,7 +459,8 @@ async function handleMessage(msg) {
     // CRITICAL: When YOU (real owner) reply, bot must STOP and not interfere with already-handled chat
     try {
       await memory.setOwnerActive(jid);
-      const pauseMins = config.ownerTakeoverPauseMinutes || 15;
+      await memory.setGlobalOwnerActive();
+      const pauseMins = config.ownerTakeoverPauseMinutes || 10;
       await memory.setHandoff(jid, pauseMins);
       console.log(`👑 Owner took over ${contactName} (${jid}) - pausing bot for ${pauseMins}m to avoid double reply`);
       // If there was an active agent task, pause it too - owner is handling manually
@@ -471,23 +494,52 @@ async function handleMessage(msg) {
 
   if (!messageContent && !mediaInfo) return;
 
-  // ===== OWNER TAKEOVER CHECK - Don't reply if owner recently active =====
+  // ===== OWNER TAKEOVER CHECK - Don't reply if owner recently active (10-15 min window) + Global Away Mode =====
   try {
+    const globalAway = await memory.getGlobalAwayMode();
     const ownerLastActive = await memory.getOwnerLastActive(jid);
-    if (ownerLastActive) {
-      const minsSince = (Date.now() - ownerLastActive) / 60000;
-      const pauseMins = config.ownerTakeoverPauseMinutes || 15;
-      if (minsSince < pauseMins) {
-        console.log(`⏸️ Skipping ${contactName} (${jid}) - YOU replied ${minsSince.toFixed(1)}m ago, bot paused for ${pauseMins}m. Msg: "${(messageContent||'').slice(0,60)}"`);
-        const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
-        if (historyText) await memory.addMessage(jid, 'user', historyText);
-        return;
-      }
-      if (msg.messageTimestamp) {
-        const msgTime = Number(msg.messageTimestamp) * 1000;
-        if (msgTime < ownerLastActive - 5000) {
-          console.log(`⏸️ Skipping OLD message from ${contactName} - msg at ${new Date(msgTime).toLocaleTimeString()} older than your reply at ${new Date(ownerLastActive).toLocaleTimeString()}. Already handled.`);
+    const globalLastActive = await memory.getGlobalOwnerActive();
+    const pauseMins = config.ownerTakeoverPauseMinutes || 10;
+    
+    // Global away mode: if owner set "back" (away=false), bot should be extra quiet
+    if (globalAway === false) {
+      // Owner said "back" - bot should stay quiet unless owner inactive for pauseMins
+      // Check per-chat first
+      if (ownerLastActive) {
+        const minsSince = (Date.now() - ownerLastActive) / 60000;
+        if (minsSince < pauseMins) {
+          console.log(`⏸️ Skipping ${contactName} (${jid}) - Owner BACK mode + YOU replied ${minsSince.toFixed(1)}m ago in this chat, bot quiet for ${pauseMins}m`);
+          const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
+          if (historyText) await memory.addMessage(jid, 'user', historyText);
           return;
+        }
+      }
+      // Also check global activity - if owner active anywhere within 5 min, stay quiet for all
+      if (globalLastActive) {
+        const globalMinsSince = (Date.now() - globalLastActive) / 60000;
+        if (globalMinsSince < 5) {
+          console.log(`⏸️ Skipping ${contactName} - Owner BACK mode + YOU active globally ${globalMinsSince.toFixed(1)}m ago, bot quiet (you're on WhatsApp)`);
+          const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
+          if (historyText) await memory.addMessage(jid, 'user', historyText);
+          return;
+        }
+      }
+    } else {
+      // Away mode ON or not set - use per-chat inactivity window (10 min)
+      if (ownerLastActive) {
+        const minsSince = (Date.now() - ownerLastActive) / 60000;
+        if (minsSince < pauseMins) {
+          console.log(`⏸️ Skipping ${contactName} (${jid}) - YOU replied ${minsSince.toFixed(1)}m ago in this chat, bot paused for ${pauseMins}m to avoid competing`);
+          const historyText = messageContent || (mediaInfo ? `[${mediaInfo.type}]` : '');
+          if (historyText) await memory.addMessage(jid, 'user', historyText);
+          return;
+        }
+        if (msg.messageTimestamp) {
+          const msgTime = Number(msg.messageTimestamp) * 1000;
+          if (msgTime < ownerLastActive - 5000) {
+            console.log(`⏸️ Skipping OLD message from ${contactName} - msg at ${new Date(msgTime).toLocaleTimeString()} older than your reply at ${new Date(ownerLastActive).toLocaleTimeString()}. Already handled.`);
+            return;
+          }
         }
       }
     }
@@ -624,7 +676,53 @@ async function handleMessage(msg) {
 
     // If we have transcription, use it as the message, otherwise use original
     const finalMessageForAI = transcribedText || messageContent || historyText;
-    const aiReply = await generateReply(jid, finalMessageForAI, history.slice(0, -1), ownerStyleTexts, mediaForAI);
+    
+    // ===== DISCLOSURE FREQUENCY LOGIC =====
+    // Disclose first time to new contact, first after handoff/away, or after 2+ weeks gap
+    // After that, chat naturally without re-announcing
+    let shouldDisclose = false;
+    let isForcedDisclosure = false;
+    try {
+      // Always check identity question first - forced disclosure
+      const { isIdentityQuestion } = await import('./ai.js');
+      if (isIdentityQuestion(finalMessageForAI)) {
+        shouldDisclose = true;
+        isForcedDisclosure = true;
+        console.log(`📢 Forced disclosure for ${jid} - identity question asked`);
+      } else {
+        const lastDisclosure = await memory.getLastDisclosure(jid);
+        const isNewContact = ownerStyleTexts.length === 0 && history.length <= 2;
+        const shouldByTime = await memory.shouldDisclose(jid);
+        
+        // Check if last assistant message was handoff - first after handoff should disclose
+        let isAfterHandoff = false;
+        if (history.length > 0) {
+          const lastAssistant = [...history].reverse().find(h => h.role === 'assistant');
+          if (lastAssistant && (lastAssistant.content.includes('let me have Bethel get back to you directly') || lastAssistant.content.includes('Bethel will reply himself') || lastAssistant.content.includes('Handoff'))) {
+            isAfterHandoff = true;
+          }
+        }
+        
+        // Also check if handoff currently active but about to expire? Actually if we are here, handoff not active
+        // Disclosure conditions:
+        // - Never disclosed before
+        // - More than 2 weeks since last disclosure
+        // - New contact
+        // - First after handoff
+        if (!lastDisclosure || shouldByTime || isNewContact || isAfterHandoff) {
+          shouldDisclose = true;
+          const reason = !lastDisclosure ? 'never disclosed' : shouldByTime ? '2+ weeks gap' : isNewContact ? 'new contact' : 'after handoff';
+          console.log(`📢 Disclosure needed for ${jid}: ${reason} - last: ${lastDisclosure ? new Date(lastDisclosure).toLocaleDateString() : 'never'}`);
+        } else {
+          console.log(`📢 No disclosure needed for ${jid} - last disclosure ${Math.floor((Date.now()-lastDisclosure)/86400000)} days ago`);
+        }
+      }
+    } catch (e) {
+      console.error('Disclosure check error:', e.message);
+      shouldDisclose = false;
+    }
+    
+    const aiReply = await generateReply(jid, finalMessageForAI, history.slice(0, -1), ownerStyleTexts, mediaForAI, { shouldDisclose, isForcedDisclosure });
 
     // FINAL CHECK: Did owner reply while AI was generating? If yes, abort to avoid double reply
     try {
@@ -668,6 +766,15 @@ async function handleMessage(msg) {
     await sock.sendMessage(jid, { text: aiReply });
     console.log(`🤖 Assistant replied to ${contactName}: ${aiReply.slice(0,100)}...`);
     await memory.addMessage(jid, 'assistant', aiReply);
+    
+    // Track disclosure if this reply included disclosure
+    if (shouldDisclose) {
+      try {
+        await memory.setLastDisclosure(jid);
+        console.log(`📢 Disclosure tracked for ${jid}`);
+      } catch {}
+    }
+    
     await sock.sendPresenceUpdate('paused', jid);
 
   } catch (err) {
@@ -749,8 +856,19 @@ Write ONLY the first message as assistant handling light check-in. Example: "${t
 
 Goal says: ${genderInstruction} - but filter: if goal asks for financial/romantic/serious, refuse and say Bethel will reply directly.
 `;
-        initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null);
-        console.log(`🤖 Generated initial msg for ${targetJid}: ${initialMsg.slice(0,120)}...`);
+        // For agent proactive messages, check if should disclose
+        let agentShouldDisclose = false;
+        try {
+          agentShouldDisclose = await memory.shouldDisclose(targetJid);
+          if (history.length <= 1) agentShouldDisclose = true; // New contact
+        } catch {}
+        
+        initialMsg = await generateReply(targetJid, initialPrompt, history, styleTexts, null, { shouldDisclose: agentShouldDisclose });
+        console.log(`🤖 Generated initial msg for ${targetJid} (disclose=${agentShouldDisclose}): ${initialMsg.slice(0,120)}...`);
+        
+        if (agentShouldDisclose) {
+          try { await memory.setLastDisclosure(targetJid); } catch {}
+        }
       } catch (e) {
         console.error(`❌ Failed to generate initial msg for ${targetJid}:`, e.message);
         // Time-aware fallback
@@ -877,7 +995,33 @@ async function handleAgentReply(jid, messageContent, mediaInfo, task) {
       mediaForAI = { type: 'voice', transcription, mimeType: 'audio/ogg' };
     }
     
-    const aiReply = await generateReply(jid, actualContent || historyText, fullHistory, styleTexts, mediaForAI);
+    // Check disclosure for agent replies
+    let agentReplyShouldDisclose = false;
+    try {
+      const lastDisc = await memory.getLastDisclosure(jid);
+      if (!lastDisc || Date.now() - lastDisc > 14*24*60*60*1000) {
+        // Only disclose if identity question or long gap, not every agent reply
+        const { isIdentityQuestion } = await import('./ai.js');
+        if (isIdentityQuestion(actualContent || historyText)) agentReplyShouldDisclose = true;
+      }
+    } catch {}
+    
+    const aiReply = await generateReply(jid, actualContent || historyText, fullHistory, styleTexts, mediaForAI, { shouldDisclose: agentReplyShouldDisclose });
+    
+    // Handle handoff in agent flow too
+    if (aiReply.startsWith('__HANDOFF__')) {
+      const handoffMsg = aiReply.replace('__HANDOFF__', '').split('__REASON__')[0].trim();
+      await sock.sendMessage(jid, { text: handoffMsg });
+      await memory.addMessage(jid, 'assistant', handoffMsg);
+      await memory.setHandoff(jid, 120);
+      await memory.clearLastDisclosure(jid); // Next reply should disclose after handoff
+      console.log(`⚠️ Agent handoff for ${jid}`);
+      try {
+        const ownerJid = `${config.phoneNumber}@s.whatsapp.net`;
+        await sock.sendMessage(ownerJid, { text: `⚠️ Agent Handoff: ${jid.split('@')[0]} - ${actualContent?.slice(0,100)}` });
+      } catch {}
+      return;
+    }
     
     await sock.sendMessage(jid, { text: aiReply });
     console.log(`🤖 Agent replied to ${jid}: ${aiReply.slice(0,100)}...`);

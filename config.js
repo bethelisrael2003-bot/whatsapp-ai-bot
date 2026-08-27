@@ -32,7 +32,7 @@ export const config = {
   maxHistory: parseInt(process.env.MAX_HISTORY || '20', 10),
   maxPerHour: parseInt(process.env.MAX_PER_HOUR || '30', 10),
   handoffMinutes: parseInt(process.env.HANDOFF_MINUTES || '120', 10),
-  ownerTakeoverPauseMinutes: parseInt(process.env.OWNER_TAKEOVER_PAUSE_MINUTES || '15', 10),
+  ownerTakeoverPauseMinutes: parseInt(process.env.OWNER_TAKEOVER_PAUSE_MINUTES || '10', 10),
   ignoreGroups: (process.env.IGNORE_GROUPS || 'true').toLowerCase() === 'true',
   replyDelayMin: parseInt(process.env.REPLY_DELAY_MIN || '1000', 10),
   replyDelayMax: parseInt(process.env.REPLY_DELAY_MAX || '4000', 10),

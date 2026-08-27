@@ -351,7 +351,7 @@ export function getNigerianTimeContext() {
   }
 }
 
-export async function generateReply(jid, userMessage, history = [], ownerStyleSamples = null, mediaInfo = null) {
+export async function generateReply(jid, userMessage, history = [], ownerStyleSamples = null, mediaInfo = null, options = {}) {
   const lowerMsg = (userMessage || '').toLowerCase();
   
   // ===== MANDATORY CHECKS BEFORE AI =====
@@ -380,19 +380,29 @@ export async function generateReply(jid, userMessage, history = [], ownerStyleSa
 
   const timeContext = getNigerianTimeContext();
   console.log(`⏰ Nigerian time: ${timeContext.formatted}`);
+  
+  // Disclosure frequency logic
+  const shouldDisclose = options.shouldDisclose || false;
+  const isForcedDisclosure = options.isForcedDisclosure || false; // Identity question
+  console.log(`📢 Disclosure check for ${jid}: shouldDisclose=${shouldDisclose}, forced=${isForcedDisclosure}, newContact=${!ownerStyleSamples || ownerStyleSamples.length === 0}`);
 
-  // ===== NEW TRANSPARENT ASSISTANT PROMPTS =====
+  // ===== NEW TRANSPARENT ASSISTANT PROMPTS WITH SMART DISCLOSURE =====
+  const disclosureInstruction = shouldDisclose 
+    ? `DISCLOSURE REQUIRED THIS MESSAGE: This is first time replying to this contact, or first after handoff/long gap (2+ weeks), or they asked identity. You MUST include brief disclosure that you are Bethel's assistant handling light messages. Example: "Hi, I'm helping Bethel with messages while he's busy —" or "Quick note: I'm Bethel's assistant handling light messages". Keep it natural, not robotic, one sentence at start, then continue with casual chat.`
+    : `DISCLOSURE NOT NEEDED THIS MESSAGE: You already disclosed recently to this contact (within 2 weeks). Do NOT re-announce "I'm assistant" again - just chat naturally and friendly in casual style. Don't be repetitive.`;
+
   const BASE_RULES = `
 You are Bethel's WhatsApp assistant, NOT Bethel himself. You handle ONLY casual, low-stakes small talk on his behalf.
 
 STRICT RULES - NEVER BREAK:
-1. TRANSPARENCY: You are an assistant. If asked if you are bot/AI/automated/really Bethel, you MUST say: "Yes, I'm Bethel's assistant handling light messages — Bethel will reply directly for anything important"
+1. TRANSPARENCY: You are an assistant. If asked if you are bot/AI/automated/really Bethel, you MUST disclose truthfully: "Yes, I'm Bethel's assistant handling light messages — Bethel will reply directly for anything important" - this is mandatory, no exceptions.
 2. NO FINANCIAL LANGUAGE EVER: Never mention money, accounts, bank, Opay, transfer, send money, drop, payment, naira, ₦, wallet, funds, cash. If user asks about money/accounts, you must handoff: say you will have Bethel reply directly. Never share or ask for account numbers.
 3. NO ROMANTIC/FLIRTY TONE: Never use romantic emojis 🥰😍💞😘💋💖💗💓💘 or intimate phrases like "my love", "babe", "baby", "sweetheart", "honey", "I love you", "my heart". Keep tone friendly, neutral, platonic. Use only simple emojis like 🙂🙏😊
 4. CASUAL SMALL TALK ONLY: You handle greetings, light banter, "how are you", weather, general check-ins, scheduling logistics like "when are you free". Nothing personal, emotional, serious, or important.
 5. AUTO-HANDOFF: If conversation becomes personal, emotional, serious, important, or user shares something deep (sadness, health, family issues, relationship problems, job loss, emergency), you MUST stop and say you will have Bethel reply directly.
-6. NEVER PRETEND TO BE BETHEL FOR MEANINGFUL CONVERSATIONS: For low-stakes casual chat, you can be friendly as his assistant, but never claim to be Bethel discussing something important. Make it clear you are assistant for light stuff.
+6. NEVER PRETEND TO BE BETHEL FOR MEANINGFUL CONVERSATIONS: For low-stakes casual chat, you can be friendly as his assistant, but never claim to be Bethel discussing something important. Make it clear you are assistant for light stuff when disclosure required, otherwise just be naturally friendly.
 7. Keep replies short, 1-2 lines, friendly, Nigerian casual but professional, no flirty tone.
+8. ${disclosureInstruction}
 
 Current Nigerian time: ${timeContext.full} - Use "${timeContext.greeting}" appropriately.
 `;
@@ -406,17 +416,18 @@ You are handling a NEW contact - first time chatting.
 Your job:
 - Be friendly, warm, helpful for casual small talk
 - Greeting: Use "${timeContext.greeting}" based on time above
-- Introduce as assistant: "Hi, I'm helping Bethel with messages..."
+${shouldDisclose ? '- Include brief disclosure: you are assistant helping Bethel with light messages (required for new contacts)' : '- Already disclosed recently, no need to re-announce assistant, just be naturally friendly'}
 - Keep it light, professional, low-stakes
 - If they ask something important/personal -> handoff immediately
 - Never mention money/accounts
 - Never flirty/romantic
 
-Example: "${timeContext.greeting}! I'm helping Bethel with messages — he's a bit busy but I can help with light stuff. How are you doing today? 🙂"
+Example if disclosure needed: "${timeContext.greeting}! I'm helping Bethel with messages — he's a bit busy but I can help with light stuff. How are you doing today? 🙂"
+Example if no disclosure needed: "${timeContext.greeting}! How are you doing today? Hope you dey fine 🙂"
 
 Time: ${timeContext.formatted}
 `;
-    console.log(`🆕 NEW CONTACT ${jid} - transparent assistant mode - ${timeContext.greeting}`);
+    console.log(`🆕 NEW CONTACT ${jid} - transparent assistant mode - ${timeContext.greeting} - disclose=${shouldDisclose}`);
   } else {
     dynamicSystemPrompt = `
 ${BASE_RULES}
@@ -431,15 +442,15 @@ Rules for known contacts:
 - Use light banter, greetings, check-ins that match general friendly tone
 - But: No financial language, no romantic/flirty tone even if past messages had it - filter it out
 - If topic gets personal/emotional/serious -> handoff to Bethel directly
-- Be transparent: For casual chat you can say "Bethel asked me to help with messages" not "I am Bethel"
+${shouldDisclose ? '- Disclosure required this message: include brief note you are assistant (first after handoff/long gap)' : '- No disclosure needed this message: already disclosed within 2 weeks, just chat naturally without re-announcing assistant'}
 - Keep it low-stakes: greetings, "how far", "how you dey", light jokes, scheduling
 - Short, 1-2 lines, no essay
 
 Time: ${timeContext.formatted} - Use "${timeContext.greeting}" appropriately.
 
-You are assistant handling casual small talk, not Bethel having meaningful conversation.
+You are assistant handling casual small talk, not Bethel having meaningful conversation. Disclosure needed: ${shouldDisclose}
 `;
-    console.log(`👤 KNOWN CONTACT ${jid} - transparent assistant mode, ${ownerStyleSamples?.length || 0} samples filtered - ${timeContext.greeting}`);
+    console.log(`👤 KNOWN CONTACT ${jid} - transparent assistant mode, ${ownerStyleSamples?.length || 0} samples filtered - ${timeContext.greeting} - disclose=${shouldDisclose}`);
   }
 
   if (mediaInfo) {
@@ -653,15 +664,16 @@ export function parseOwnerCommand(text) {
 }
 
 export function getOwnerHelpText() {
-  return `🤖 *Bethel's WhatsApp Assistant - Transparent Mode*
+  return `🤖 *Bethel's WhatsApp Assistant - Transparent Mode (v2)*
 
-This assistant now handles ONLY casual small talk on your behalf, with safety filters:
+This assistant now handles ONLY casual small talk on your behalf, with smart disclosure + quiet-when-you're-active.
 
 ✅ *What it does:*
 • Greets people, light banter, "how are you"
 • Scheduling logistics: "when are you free"
 • Tells people you're busy and you'll reply directly for important stuff
-• Always discloses it's an assistant if asked
+• Discloses it's assistant first time to new contact, after handoff, or after 2+ weeks gap - then chats naturally without repeating
+• Always re-discloses if asked "are you bot / really you"
 
 🚫 *Hard blocks (never sends):*
 • Any financial language: money, accounts, bank, Opay, transfer, etc.
@@ -670,19 +682,27 @@ This assistant now handles ONLY casual small talk on your behalf, with safety fi
 
 ⚠️ *Auto-handoff triggers:*
 • Emotional distress, health, family, relationship serious talk
-• Anyone asks "are you bot / really you" -> discloses truthfully
 • Financial requests -> flags you
 • Important decisions, legal, etc.
 
-🔧 *Controls:*
+🔧 *Quiet-when-you're-active:*
+• Bot stays quiet if YOU replied in that chat within last 10m (OWNER_TAKEOVER_PAUSE_MINUTES)
+• Uses inactivity window - only replies if you haven't sent message in that chat recently
+• No double-replying or competing when you're handling conversation
+• Tracks global activity too - if you're active anywhere on WhatsApp, bot stays extra quiet
+
+🎛️ *Manual Controls (self-chat):*
+away / back - Toggle global away mode
+• "away" = Bot ACTIVE, handles casual while you're away
+• "back" = Bot QUIET, won't compete while you're online
 /pause 234... - Pause for contact
 /resume 234... - Resume
 /resume all - Resume all
 /clear 234... - Clear history
 /clear sessions - Fix Bad MAC
-/status - Status
+/status - Status + disclosure stats
 /help - This help
 
-Assistant is transparent, casual small talk only, never pretends to be you for meaningful conversations.
+Disclosure: First time to new contact, after handoff, after 2 weeks gap, or when asked identity. Otherwise natural chat.
 `;
 }

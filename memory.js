@@ -279,6 +279,139 @@ class MemoryStore {
       }
     } catch {}
   }
+
+  // ---------- DISCLOSURE TRACKING ----------
+  // Track when bot last disclosed it's an assistant to each contact
+  async setLastDisclosure(jid) {
+    const key = this._key(jid, 'disclosure:last');
+    const now = Date.now();
+    try {
+      if (this.isRedis) {
+        await this.redis.set(key, now.toString(), { ex: 60 * 60 * 24 * 30 }); // 30 days
+      } else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_disclosure.json`);
+        fs.writeFileSync(file, JSON.stringify({ timestamp: now }));
+      }
+      console.log(`📢 Disclosure tracked for ${jid} at ${new Date(now).toISOString()}`);
+      return now;
+    } catch (e) {
+      console.warn('setLastDisclosure error:', e.message);
+      return now;
+    }
+  }
+
+  async getLastDisclosure(jid) {
+    const key = this._key(jid, 'disclosure:last');
+    try {
+      if (this.isRedis) {
+        const val = await this.redis.get(key);
+        if (!val) return null;
+        return typeof val === 'string' ? parseInt(val, 10) : val;
+      } else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_disclosure.json`);
+        if (!fs.existsSync(file)) return null;
+        const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        return data.timestamp || null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  async shouldDisclose(jid) {
+    const last = await this.getLastDisclosure(jid);
+    if (!last) return true; // Never disclosed -> should disclose
+    const twoWeeksMs = 14 * 24 * 60 * 60 * 1000;
+    return Date.now() - last > twoWeeksMs; // More than 2 weeks since last disclosure
+  }
+
+  async clearLastDisclosure(jid) {
+    const key = this._key(jid, 'disclosure:last');
+    try {
+      if (this.isRedis) await this.redis.del(key);
+      else {
+        const file = path.join(this.localDir, `${this._sanitize(jid)}_disclosure.json`);
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      }
+      console.log(`🗑️ Disclosure cleared for ${jid} - next reply will disclose`);
+    } catch {}
+  }
+
+  // ---------- GLOBAL OWNER ACTIVITY & AWAY MODE ----------
+  async setGlobalOwnerActive() {
+    const key = 'owner:global:active';
+    const now = Date.now();
+    try {
+      if (this.isRedis) {
+        await this.redis.set(key, now.toString(), { ex: 60 * 60 * 24 });
+      } else {
+        const file = path.join(this.localDir, `global_owner_active.json`);
+        fs.writeFileSync(file, JSON.stringify({ timestamp: now }));
+      }
+      return now;
+    } catch {
+      return now;
+    }
+  }
+
+  async getGlobalOwnerActive() {
+    const key = 'owner:global:active';
+    try {
+      if (this.isRedis) {
+        const val = await this.redis.get(key);
+        if (!val) return null;
+        return typeof val === 'string' ? parseInt(val, 10) : val;
+      } else {
+        const file = path.join(this.localDir, `global_owner_active.json`);
+        if (!fs.existsSync(file)) return null;
+        const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        return data.timestamp || null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  async isGlobalOwnerRecentlyActive(minutes = 10) {
+    const last = await this.getGlobalOwnerActive();
+    if (!last) return false;
+    return (Date.now() - last) / 60000 < minutes;
+  }
+
+  async setGlobalAwayMode(isAway) {
+    const key = 'owner:global:away';
+    try {
+      if (this.isRedis) {
+        await this.redis.set(key, isAway ? '1' : '0', { ex: 60 * 60 * 24 * 7 }); // 7 days
+      } else {
+        const file = path.join(this.localDir, `global_away.json`);
+        fs.writeFileSync(file, JSON.stringify({ isAway, timestamp: Date.now() }));
+      }
+      console.log(`🌙 Global away mode set to: ${isAway ? 'AWAY (bot active)' : 'BACK (bot quiet)'}`);
+      return isAway;
+    } catch (e) {
+      console.warn('setGlobalAwayMode error:', e.message);
+      return isAway;
+    }
+  }
+
+  async getGlobalAwayMode() {
+    const key = 'owner:global:away';
+    try {
+      if (this.isRedis) {
+        const val = await this.redis.get(key);
+        if (val === null || val === undefined) return null; // Not set, use per-chat logic
+        return val === '1' || val === 1 || val === true;
+      } else {
+        const file = path.join(this.localDir, `global_away.json`);
+        if (!fs.existsSync(file)) return null;
+        const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        return data.isAway;
+      }
+    } catch {
+      return null;
+    }
+  }
 }
 
 let memoryInstance = null;
